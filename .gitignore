@@ -2,7 +2,7 @@
 /target
 **/*.rs.bk
 Cargo.lock.orig
-
+.bmad*
 # macOS
 .DS_Store
 
