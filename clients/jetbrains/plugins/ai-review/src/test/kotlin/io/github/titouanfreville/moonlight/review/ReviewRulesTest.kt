@@ -126,4 +126,25 @@ class ReviewRulesTest {
         // Dragged to the start of the next line: that line is not part of it.
         assertEquals(3..4, commentRange(2, 4, selectionEndsAtColumnZero = true))
     }
+
+    @Test
+    fun `a gutter click comments on its own line`() {
+        assertEquals(5..5, gutterCommentRange(4, hasSelection = false, 0, 0, false))
+    }
+
+    @Test
+    fun `a gutter click inside a selection comments on the whole selection`() {
+        assertEquals(3..7, gutterCommentRange(5, hasSelection = true, 2, 6, false))
+    }
+
+    @Test
+    fun `a gutter click outside the selection ignores it`() {
+        assertEquals(10..10, gutterCommentRange(9, hasSelection = true, 2, 6, false))
+    }
+
+    @Test
+    fun `a selection ending at column zero does not claim the next line for a gutter click`() {
+        // Lines 3–6 selected by dragging to the start of line 7: clicking line 7 is outside it.
+        assertEquals(7..7, gutterCommentRange(6, hasSelection = true, 2, 6, true))
+    }
 }

@@ -150,7 +150,7 @@ object ReviewOps {
      * Comment on the selection (or caret line) of an editor showing a reviewed file — either
      * side of the diff. `wholeFile` writes a file comment instead.
      */
-    fun addComment(project: Project, editor: Editor, wholeFile: Boolean) {
+    fun addComment(project: Project, editor: Editor, wholeFile: Boolean, clickedLine: Int? = null) {
         val state = ReviewState.of(project)
         val location = state.locate(editor.document)
         if (location == null) {
@@ -163,7 +163,9 @@ object ReviewOps {
             val startLine = document.getLineNumber(selection.selectionStart)
             val endLine = document.getLineNumber(selection.selectionEnd)
             val atColumnZero = selection.hasSelection() && selection.selectionEnd == document.getLineStartOffset(endLine)
-            commentRange(startLine, endLine, atColumnZero)
+            // From the gutter: the clicked line, or the selection it sits in.
+            if (clickedLine != null) gutterCommentRange(clickedLine, selection.hasSelection(), startLine, endLine, atColumnZero)
+            else commentRange(startLine, endLine, atColumnZero)
         }
         // What the lines read when the comment was written — how the tracker later tells
         // an outdated comment from a current one.

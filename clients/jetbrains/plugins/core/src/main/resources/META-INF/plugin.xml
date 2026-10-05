@@ -40,4 +40,9 @@
         <!-- Sticky: an offer to resume a session waits for the operator rather than fading. -->
         <notificationGroup id="MoonlightCode Sessions" displayType="STICKY_BALLOON"/>
     </extensions>
+    <actions>
+        <!-- Referenced from each tab's toolbar: the way to the other tabs that cannot overflow. -->
+        <group id="Moonlight.ToolWindow.OtherTabs"
+               class="io.github.titouanfreville.moonlight.core.OtherTabsGroup"/>
+    </actions>
 </idea-plugin>

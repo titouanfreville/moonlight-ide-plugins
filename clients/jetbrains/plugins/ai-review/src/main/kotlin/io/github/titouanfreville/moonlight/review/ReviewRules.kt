@@ -88,3 +88,21 @@ fun commentRange(selectionStartLine: Int, selectionEndLine: Int, selectionEndsAt
     val end = if (selectionEndsAtColumnZero && selectionEndLine > selectionStartLine) selectionEndLine - 1 else selectionEndLine
     return (selectionStartLine + 1)..(end + 1)
 }
+
+/**
+ * The range a gutter **+** comments on: the selection, when the clicked line is part of it —
+ * select, then click beside it — else just the clicked line. 0-based in, 1-based out.
+ */
+fun gutterCommentRange(
+    clickedLine: Int,
+    hasSelection: Boolean,
+    selectionStartLine: Int,
+    selectionEndLine: Int,
+    selectionEndsAtColumnZero: Boolean,
+): IntRange {
+    if (hasSelection) {
+        val selected = commentRange(selectionStartLine, selectionEndLine, selectionEndsAtColumnZero)
+        if (clickedLine + 1 in selected) return selected
+    }
+    return (clickedLine + 1)..(clickedLine + 1)
+}

@@ -101,6 +101,8 @@
         </action>
 
         <group id="Moonlight.Review.Toolbar">
+            <reference ref="Moonlight.ToolWindow.OtherTabs"/>
+            <separator/>
             <reference ref="Moonlight.Review.Refresh"/>
             <reference ref="Moonlight.Review.OpenSession"/>
             <reference ref="Moonlight.Review.Submit"/>

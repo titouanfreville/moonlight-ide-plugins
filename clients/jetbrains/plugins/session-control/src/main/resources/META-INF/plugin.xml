@@ -92,6 +92,8 @@
                 icon="AllIcons.General.Remove"/>
 
         <group id="Moonlight.Sessions.Toolbar">
+            <reference ref="Moonlight.ToolWindow.OtherTabs"/>
+            <separator/>
             <reference ref="Moonlight.SessionControl.StartSession"/>
             <reference ref="Moonlight.SessionControl.Refresh"/>
             <reference ref="Moonlight.SessionControl.NewGroup"/>

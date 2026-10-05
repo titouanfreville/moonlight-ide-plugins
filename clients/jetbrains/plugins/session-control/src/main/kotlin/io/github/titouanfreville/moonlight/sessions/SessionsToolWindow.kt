@@ -30,6 +30,7 @@ import io.github.titouanfreville.moonlight.core.HeldApproval
 import io.github.titouanfreville.moonlight.core.MoonlightApi
 import io.github.titouanfreville.moonlight.core.MoonlightDataKeys
 import io.github.titouanfreville.moonlight.core.MoonlightListener
+import io.github.titouanfreville.moonlight.core.MoonlightToolWindow
 import io.github.titouanfreville.moonlight.core.MoonlightToolWindowTab
 import java.awt.BorderLayout
 import java.awt.event.MouseAdapter
@@ -57,6 +58,7 @@ import javax.swing.tree.TreePath
  */
 class SessionsTab : MoonlightToolWindowTab {
     override val title: String = TITLE
+    override val icon: Icon = IconLoader.getIcon("/icons/moonlight.svg", SessionsTab::class.java)
 
     override fun createComponent(project: Project, toolWindow: ToolWindow, parent: com.intellij.openapi.Disposable): javax.swing.JComponent =
         SessionsPanel(project, toolWindow).also { Disposer.register(parent, it) }
@@ -108,8 +110,7 @@ private class SessionsPanel(private val project: Project, private val toolWindow
         toolWindow.setIcon(if (waiting > 0) com.intellij.execution.runners.ExecutionUtil.getLiveIndicator(baseIcon) else baseIcon)
         // The tab, not `toolWindow.title`: setting the title renames whichever tab is
         // selected — which blanked this one's name, and would rename Review's too.
-        toolWindow.contentManagerIfCreated?.contents?.firstOrNull { it.component === this }?.displayName =
-            if (waiting > 0) "${SessionsTab.TITLE} ($waiting waiting)" else SessionsTab.TITLE
+        MoonlightToolWindow.setBadge(toolWindow, this, if (waiting > 0) "$waiting" else null, if (waiting > 0) "$waiting waiting" else null)
     }
 
     override fun getData(dataId: String): Any? = when {

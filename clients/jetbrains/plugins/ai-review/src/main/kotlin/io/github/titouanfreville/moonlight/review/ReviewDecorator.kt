@@ -14,6 +14,9 @@ import com.intellij.openapi.editor.Inlay
 import com.intellij.openapi.editor.colors.EditorFontType
 import com.intellij.openapi.editor.event.EditorFactoryEvent
 import com.intellij.openapi.editor.event.EditorFactoryListener
+import com.intellij.openapi.editor.event.EditorMouseEvent
+import com.intellij.openapi.editor.event.EditorMouseListener
+import com.intellij.openapi.editor.event.EditorMouseMotionListener
 import com.intellij.openapi.editor.markup.GutterIconRenderer
 import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.editor.markup.HighlighterTargetArea
@@ -49,6 +52,9 @@ import javax.swing.Icon
 class ReviewDecorator(private val project: Project) : Disposable {
     private val decorated = HashSet<Editor>()
 
+    /** The hover "+" each reviewed editor carries, by editor; disposed with it. */
+    private val hovers = HashMap<Editor, Disposable>()
+
     fun start() {
         EditorFactory.getInstance().addEditorFactoryListener(object : EditorFactoryListener {
             override fun editorCreated(event: EditorFactoryEvent) {
@@ -58,6 +64,7 @@ class ReviewDecorator(private val project: Project) : Disposable {
             override fun editorReleased(event: EditorFactoryEvent) {
                 clear(event.editor)
                 decorated.remove(event.editor)
+                hovers.remove(event.editor)?.let(Disposer::dispose)
             }
         }, this)
         project.messageBus.connect(this).subscribe(ReviewListener.TOPIC, ReviewListener { redecorate() })
@@ -82,6 +89,7 @@ class ReviewDecorator(private val project: Project) : Disposable {
         val state = ReviewState.of(project)
         val location = state.locate(editor.document) ?: return
         decorated += editor
+        installHover(editor)
         val document = editor.document
         val marks = mutableListOf<Any>()
         for (anchor in anchorsFor(state.threads(location.sessionId), location.path, location.side, document.lineCount, state.showResolved)) {
@@ -108,9 +116,46 @@ class ReviewDecorator(private val project: Project) : Disposable {
         editor.putUserData(MARKS, null)
     }
 
+    /**
+     * A "+" in the gutter of the line under the mouse: click it to comment on that line — or
+     * on the selection it is part of. The platform's own review gutter is internal API; this
+     * is the same gesture from public pieces: a mouse-motion listener moving one highlighter.
+     */
+    private fun installHover(editor: Editor) {
+        if (editor in hovers) return
+        val lifetime = Disposer.newDisposable("MoonlightCode review hover")
+        Disposer.register(this, lifetime)
+        hovers[editor] = lifetime
+        var mark: RangeHighlighter? = null
+        var line = -1
+        fun hide() {
+            mark?.dispose()
+            mark = null
+            line = -1
+        }
+        editor.addEditorMouseMotionListener(object : EditorMouseMotionListener {
+            override fun mouseMoved(e: EditorMouseEvent) {
+                val at = e.logicalPosition.line
+                if (at == line) return
+                hide()
+                val document = editor.document
+                if (at !in 0 until document.lineCount || ReviewState.of(project).locate(document) == null) return
+                val start = document.getLineStartOffset(at)
+                mark = editor.markupModel.addRangeHighlighter(start, start, HighlighterLayer.LAST, TextAttributes(), HighlighterTargetArea.LINES_IN_RANGE)
+                    .apply { gutterIconRenderer = AddCommentGutter(project, editor, at) }
+                line = at
+            }
+        }, lifetime)
+        editor.addEditorMouseListener(object : EditorMouseListener {
+            override fun mouseExited(event: EditorMouseEvent) = hide()
+        }, lifetime)
+        Disposer.register(lifetime) { hide() }
+    }
+
     override fun dispose() {
         decorated.forEach(::clear)
         decorated.clear()
+        hovers.clear() // disposed with this, as children
     }
 
     companion object {
@@ -124,6 +169,27 @@ class ReviewStartup : ProjectActivity {
     override suspend fun execute(project: Project) {
         ApplicationManager.getApplication().invokeLater({ ReviewDecorator.of(project).start() }, project.disposed)
     }
+}
+
+/** The hover "+": comment on this line, or on the selection it sits in. */
+private class AddCommentGutter(
+    private val project: Project,
+    private val editor: Editor,
+    private val line: Int,
+) : GutterIconRenderer() {
+    override fun getIcon(): Icon = AllIcons.General.Add
+
+    override fun getTooltipText(): String =
+        "Add a review comment on line ${line + 1} — or on the selection, when this line is part of it"
+
+    override fun getClickAction(): AnAction = object : AnAction() {
+        override fun actionPerformed(e: AnActionEvent) = ReviewOps.addComment(project, editor, wholeFile = false, clickedLine = line)
+    }
+
+    override fun isNavigateAction(): Boolean = true
+    override fun getAlignment(): Alignment = Alignment.LEFT
+    override fun equals(other: Any?): Boolean = other is AddCommentGutter && other.editor === editor && other.line == line
+    override fun hashCode(): Int = line
 }
 
 /** The flags a comment carries, in words — who wrote it and where it stands. */

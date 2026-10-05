@@ -30,6 +30,7 @@ import io.github.titouanfreville.moonlight.client.shortId
 import io.github.titouanfreville.moonlight.core.MoonlightApi
 import io.github.titouanfreville.moonlight.core.MoonlightDataKeys
 import io.github.titouanfreville.moonlight.core.MoonlightListener
+import io.github.titouanfreville.moonlight.core.MoonlightToolWindow
 import io.github.titouanfreville.moonlight.core.MoonlightToolWindowTab
 import java.awt.BorderLayout
 import java.awt.Font
@@ -59,6 +60,7 @@ object ReviewDataKeys {
  */
 class ReviewTab : MoonlightToolWindowTab {
     override val title: String = TITLE
+    override val icon: javax.swing.Icon = AllIcons.Actions.Diff
 
     override fun createComponent(project: Project, toolWindow: ToolWindow, parent: Disposable): JComponent =
         QueuePanel(project, toolWindow).also { Disposer.register(parent, it) }
@@ -263,10 +265,8 @@ private class QueuePanel(private val project: Project, private val toolWindow: T
     }
 
     /** The tab says how much is waiting, so the count reads without opening it. */
-    private fun retitle(count: Int) {
-        val content = toolWindow.contentManagerIfCreated?.contents?.firstOrNull { it.component === this } ?: return
-        content.displayName = if (count > 0) "${ReviewTab.TITLE} ($count)" else ReviewTab.TITLE
-    }
+    private fun retitle(count: Int) =
+        MoonlightToolWindow.setBadge(toolWindow, this, if (count > 0) "$count" else null)
 
     /** One file's diff, read when it is selected. Stale answers are dropped. */
     private fun loadPreview(item: ReviewQueueItem?) {
