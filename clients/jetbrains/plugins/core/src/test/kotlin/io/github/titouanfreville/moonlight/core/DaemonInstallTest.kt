@@ -2,6 +2,7 @@ package io.github.titouanfreville.moonlight.core
 
 import io.github.titouanfreville.moonlight.client.Os
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -82,9 +83,22 @@ class DaemonInstallTest {
         assertEquals(DaemonPins("0.1.3", "v0.1.3", mapOf("aarch64-apple-darwin" to DaemonPins.TargetHashes("aa", "bb"))), pins)
     }
 
+    /**
+     * Pins are present exactly when CI wrote them (`pin-daemon.js` runs before the build), so
+     * this holds in both places: a local build reads none, and a CI build must read the file
+     * it carries — an unreadable one would ship a plugin that can never install a daemon.
+     */
     @Test
-    fun `a local build carries no pins`() {
-        assertNull(DaemonPins.bundled())
+    fun `bundled pins are absent locally and readable when CI wrote them`() {
+        val written = DaemonPins::class.java.getResource("/moonlight/daemon-pins.json") != null
+        val pins = DaemonPins.bundled()
+        if (!written) {
+            assertNull(pins)
+            return
+        }
+        assertNotNull(pins, "daemon-pins.json is bundled but does not parse")
+        assertTrue(pins!!.version.isNotBlank(), "pins carry no version")
+        assertTrue(pins.assets.isNotEmpty(), "pins carry no platform")
     }
 
     /** A verified cache is reused without touching the network; a tampered one is removed. */

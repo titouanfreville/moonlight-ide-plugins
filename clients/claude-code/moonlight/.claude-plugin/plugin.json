@@ -1,0 +1,14 @@
+{
+  "name": "moonlightcode",
+  "version": "0.1.0",
+  "description": "MoonlightCode for Claude Code: workflow phases, with Plan as a read-only boundary while Claude Code runs in auto mode",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "reviewSkills": {
+      "type": "string",
+      "title": "Review skills",
+      "description": "The review skills the Review panel offers to run, comma-separated (bare, or plugin:name). Only the installed ones are offered. A team sets its own here, e.g. through managed settings.",
+      "default": "bmad-code-review, code-review"
+    }
+  }
+}
