@@ -74,29 +74,29 @@ test('Review panel: an attached skill gets the contract; its findings are triage
 
   const ui = await $.ui.mount({ plugin: 'moonlightcode', surface: 'terminal', ...PANE } as never)
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /⏳ bmad-method:bmad-code-review running/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /bmad-method:bmad-code-review is reviewing/ })).toBeDefined()
   expect(await ui.find({ key: 'run' })).toBeUndefined()
 
   await $.turn.complete({ answer: ANSWER, reason: 'answer', durationMs: 1, isAborted: false, turnId: 't1' } as never)
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /2 kept · 0 dismissed/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /2 kept, 0 dismissed/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Two lanes ran\./ })).toBeDefined()
   expect(await ui.find({ key: 'goto:M1-1700000000000-0', text: 'src/f.ts:2' })).toBeDefined()
-  expect(await ui.find({ key: 'submit', text: /Submit review \(2\)/ })).toBeDefined()
+  expect(await ui.find({ key: 'submit', text: /Send review \(2\)/ })).toBeDefined()
   // Kept findings are pending: no "All good" until they are sent or dismissed.
   expect(await ui.find({ key: 'accept' })).toBeUndefined()
 
   await ui.press({ key: 'dismiss:L1-1700000000000-1' })
-  expect(await ui.find({ type: 'Text', text: /1 kept · 1 dismissed/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /1 kept, 1 dismissed/ })).toBeDefined()
 
   await ui.press({ key: 'note:M1-1700000000000-0' })
   await ui.input({ key: 'note-input:M1-1700000000000-0', text: 'Keep 3, document why' })
-  expect(await ui.find({ type: 'Text', text: /→ Keep 3, document why/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /You: Keep 3, document why/ })).toBeDefined()
 
   // In the file's diff, the finding sits under its line.
   await ui.press({ key: 'file:src/f.ts' })
   expect(await ui.find({ type: 'Text', text: /b changed meaning/ })).toBeDefined()
-  expect(await ui.find({ key: 'submit', text: /Submit \(1\)/ })).toBeDefined()
+  expect(await ui.find({ key: 'submit', text: /Send \(1\)/ })).toBeDefined()
 
   await ui.press({ key: 'back' })
   await ui.press({ key: 'dismiss:M1-1700000000000-0' })

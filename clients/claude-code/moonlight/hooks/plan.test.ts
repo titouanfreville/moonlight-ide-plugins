@@ -9,13 +9,16 @@ test('parsePlan: kinds, levels, 1-based lines, fences toggle', () => {
     { line: 2, kind: 'blank', text: '' },
     { line: 3, kind: 'bullet', text: '- step one', level: 0 },
     { line: 4, kind: 'bullet', text: '  - detail', level: 1 },
-    { line: 5, kind: 'fence', text: '```ts' },
-    { line: 6, kind: 'code', text: '# not a heading' },
-    { line: 7, kind: 'fence', text: '```' },
+    { line: 5, kind: 'fence', text: '```ts', lang: 'ts', opens: true },
+    { line: 6, kind: 'code', text: '# not a heading', lang: 'ts' },
+    { line: 7, kind: 'fence', text: '```', opens: false },
     { line: 8, kind: 'text', text: 'Done.' },
   ])
   expect(parsePlan('1. first\r\n## Two').map(l => l.kind)).toEqual(['bullet', 'heading'])
   expect(parsePlan('#nospace').map(l => l.kind)).toEqual(['text'])
+  // A fence with no language; a text line nested under a bullet keeps its level.
+  expect(parsePlan('```\nx\n```')[1]).toEqual({ line: 2, kind: 'code', text: 'x' })
+  expect(parsePlan('- a\n    more about a')[1]).toEqual({ line: 2, kind: 'text', text: '    more about a', level: 2 })
 })
 
 test('planExcerpt and planSpan', () => {

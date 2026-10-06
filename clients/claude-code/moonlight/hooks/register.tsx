@@ -34,17 +34,21 @@ import {
   type Repo,
   type ReviewScope,
   type ReviewLayout,
+  counted,
   untrackedCount,
   UNTRACKED_COUNT_MAX,
 } from './review'
 import {
   canSend,
+  drawable,
   formatVerdict,
+  isTableRow,
   parsePlan,
   planExcerpt,
   planSpan,
   presentedAnswer,
   type PlanComment,
+  type PlanLine,
   type PlanVerdict,
 } from './plan'
 import {
@@ -134,7 +138,7 @@ const PHASE_STYLE: Record<Phase, { badge: string; color: string }> = {
   plan: { badge: ' ◐ PLAN ', color: 'yellow' },
   auto: { badge: ' ● AUTO ', color: 'green' },
   test: { badge: ' ● TEST ', color: 'cyan' },
-  review: { badge: ' ● REVIEW ', color: 'magenta' },
+  review: { badge: ' ● REVIEW ', color: 'blue' },
   commit: { badge: ' ■ COMMIT ', color: 'red' },
 }
 const pendingState = atom({ plugin: 'moonlightcode', key: 'pending' } as const, null)
@@ -755,10 +759,10 @@ const acceptReview = async ($: $): Promise<string> => {
   const kept = (await read($, reviewFindingsState)).filter(f => f.decision === 'keep')
   if (comments.length > 0 || kept.length > 0) {
     const pending = [
-      ...(comments.length > 0 ? [`${comments.length} comment(s)`] : []),
-      ...(kept.length > 0 ? [`${kept.length} kept finding(s)`] : []),
+      ...(comments.length > 0 ? [counted(comments.length, 'comment')] : []),
+      ...(kept.length > 0 ? [counted(kept.length, 'kept finding')] : []),
     ].join(' and ')
-    const refused = `Not accepted: ${pending} pending. Submit them, or remove or dismiss them first.`
+    const refused = `Not accepted: ${pending} pending. Send them, or remove or dismiss them first.`
     $.ui.toast(`Moonlight: ${refused}`)
     return refused
   }
@@ -799,8 +803,8 @@ const submitReview = async ($: $, summary: string): Promise<string> => {
   await clearSelection($)
   const sent = comments.map(c => c.id)
   const what = [
-    ...(kept.length > 0 ? [`${kept.length} finding(s)`] : []),
-    ...(comments.length > 0 ? [`${comments.length} comment(s)`] : []),
+    ...(kept.length > 0 ? [counted(kept.length, 'finding')] : []),
+    ...(comments.length > 0 ? [counted(comments.length, 'comment')] : []),
   ].join(', ')
   void askModel($, formatReview(comments, summary, kept.map(formatFinding))).then(
     () => $.ui.toast(`Moonlight: review sent (${what})`),
@@ -951,7 +955,7 @@ const ingestAnswer = async (
   // written, findings dismissed. The running review's own answer replaces it.
   const triage = await read($, reviewFindingsState)
   if (running === null && triage.some(f => f.note !== undefined || f.decision === 'dismiss')) {
-    $.ui.toast('Moonlight: a findings block arrived outside a review run; your triage is kept. Submit it or clear it first.')
+    $.ui.toast('Moonlight: a findings block arrived outside a review run; your triage is kept. Send it or clear it first.')
     return
   }
   await update($, reviewRunState, () => null)
@@ -967,7 +971,7 @@ const ingestAnswer = async (
   )
   const failed = report.lanesFailed.length > 0 ? ` Failed: ${report.lanesFailed.join(', ')}.` : ''
   await update($, reviewFindingsStatusState, () => `${report.notes}${failed}`.trim() || null)
-  $.ui.toast(`Moonlight: AI review done, ${report.findings.length} finding(s): /ml-review`)
+  $.ui.toast(`Moonlight: AI review done, ${counted(report.findings.length, 'finding')}: /ml-review`)
 }
 
 const decideFinding = async ($: $, id: string, decision: 'keep' | 'dismiss'): Promise<void> => {
@@ -1026,7 +1030,7 @@ const planDraftState = atom({ plugin: 'moonlightcode', key: 'planDraft' } as con
 const planNoteState = atom({ plugin: 'moonlightcode', key: 'planNote' } as const, '')
 const planRejectingState = atom({ plugin: 'moonlightcode', key: 'planRejecting' } as const, false)
 
-const VERDICT_WORD = { approve: 'approved', refine: 'sent back for refinement', reject: 'rejected' } as const
+const VERDICT_WORD = { approve: 'approved', refine: 'sent back for changes', reject: 'rejected' } as const
 
 const openPlanPane = async ($: $): Promise<string> => {
   try {
@@ -1162,13 +1166,13 @@ const sendPlanVerdict = async ($: $, verdict: PlanVerdict, said?: string): Promi
 // draws (the VS Code extension).
 const planReport = async ($: $): Promise<string[]> => {
   const doc = await read($, planDocState)
-  if (doc === null) return ['No plan yet: in the Plan phase, the agent presents its plan with present_plan.']
+  if (doc === null) return ["No plan yet. In the Plan phase, the agent's plan shows up here for you to approve."]
   const comments = await read($, planCommentsState)
   const note = await read($, planNoteState)
   const lines = parsePlan(doc.markdown)
   const width = String(lines.length).length
   return [
-    `Plan v${doc.version}${doc.title !== '' ? ` · ${doc.title}` : ''} · ${doc.decided !== undefined ? VERDICT_WORD[doc.decided] : 'awaiting your verdict'} · ${comments.length} comment(s)`,
+    `Plan v${doc.version}${doc.title !== '' ? `  ${doc.title}` : ''}, ${doc.decided !== undefined ? VERDICT_WORD[doc.decided] : 'waiting for you'}, ${counted(comments.length, 'comment')}`,
     ...lines.map(l => `  ${String(l.line).padStart(width)}  ${l.text}`),
     ...(comments.length > 0 ? ['Comments:', ...comments.map(c => `  [${c.id}] ${planSpan(c)}: ${c.body.replace(/\n/g, ' · ')}`)] : []),
     ...(note !== '' ? [`Note: ${note}`] : []),
@@ -1362,7 +1366,7 @@ export const register: Register = (on, options) => {
       if (target !== 'session' && target !== 'head') return { text: 'Usage: /ml-review scope session|head' }
       await update($, reviewScopeState, () => target)
       await loadChangedFiles($)
-      return { text: `Review scope: ${target === 'session' ? "this session's changes" : 'everything since HEAD'}.` }
+      return { text: `Review scope: ${target === 'session' ? "changes made in this session" : 'changes since the last commit'}.` }
     }
     const placement = await toggleReviewPane($)
     const files = await read($, reviewFilesState)
@@ -1374,7 +1378,7 @@ export const register: Register = (on, options) => {
     const listed = comments.map(c => `  [${c.id}] ${anchorLabel(c)}: ${c.body}`)
     return {
       text: [
-        `${placement} ${files.length} changed file(s), ${comments.length} comment(s).`,
+        `${placement} ${counted(files.length, 'changed file')}, ${counted(comments.length, 'comment')}.`,
         ...lines,
         ...(listed.length > 0 ? ['Comments:', ...listed] : []),
       ].join('\n'),
@@ -1392,14 +1396,14 @@ export const register: Register = (on, options) => {
 
     // One finding, as the list and the diff draw it: its claim, then Keep or
     // Dismiss and a note, the operator's decision about it.
-    const SEVERITY_COLOR = { high: 'red', medium: 'yellow', low: 'gray' } as const
     const finding = (f: TriagedFinding, withPlace: boolean) => {
       const isDismissed = f.decision === 'dismiss'
       return (
         <Box flexDirection="column" paddingLeft={withPlace ? 0 : 2}>
           {/* Short items on the first row (a button does not shrink); the summary wraps on its own line. */}
           <Box flexDirection="row">
-            <Text color={SEVERITY_COLOR[f.severity]} bold dimColor={isDismissed}>{`🤖 ${f.severity.toUpperCase()} `}</Text>
+            {/* Severity as a word: red and yellow belong to the phases. */}
+            <Text bold={f.severity === 'high'} dimColor={isDismissed || f.severity === 'low'}>{`🤖 ${f.severity}  `}</Text>
             {withPlace && (
               <Button key={`goto:${f.id}`} plain dimColor={isDismissed} label={findingPlace(f.file, f.line)} onPress={() => void openReviewFile($, f.file)} />
             )}
@@ -1420,7 +1424,11 @@ export const register: Register = (on, options) => {
               <Text color="green" dimColor wrap="wrap">{`Fix: ${f.fix}`}</Text>
             </Box>
           )}
-          {f.note !== undefined && <Text color="cyan">{`   → ${f.note.replace(/\n/g, ' · ')}`}</Text>}
+          {f.note !== undefined && (
+            <Box paddingLeft={3}>
+              <Text bold wrap="wrap">{`You: ${f.note}`}</Text>
+            </Box>
+          )}
           <Box flexDirection="row" paddingLeft={3}>
             <Button
               key={`${isDismissed ? 'keep' : 'dismiss'}:${f.id}`}
@@ -1442,7 +1450,7 @@ export const register: Register = (on, options) => {
               key={`note-input:${f.id}`}
               value={f.note ?? ''}
               label="   Your decision"
-              placeholder="What should the agent do about this? Enter saves"
+              placeholder="What the agent should do about it. Enter saves"
               autoFocus
               onSubmit={value => void saveFindingNote($, f.id, value)}
             />
@@ -1472,13 +1480,14 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column">
           <Box flexDirection="row">
             <Text bold color="cyan">Review</Text>
-            <Text dimColor>
-              {`  ${isSession ? 'this session' : 'since HEAD'} · ${files.length} file(s)${hasSeveralRepos ? ` in ${new Set(files.map(f => f.repo)).size} repos` : ''} · ${comments.length} comment(s)`}
-            </Text>
+            <Text dimColor>{isSession ? '  changes made in this session' : '  changes since the last commit'}</Text>
           </Box>
+          <Text dimColor>
+            {`${counted(files.length, 'file')}${hasSeveralRepos ? ` in ${counted(new Set(files.map(f => f.repo)).size, 'repo')}` : ''}, ${counted(comments.length, 'comment')}`}
+          </Text>
           {problem !== null && <Text color="yellow">{problem}</Text>}
           {problem === null && files.length === 0 && (
-            <Text dimColor>{isSession ? 'No changes by the agent since the review started.' : 'No changes against HEAD.'}</Text>
+            <Text dimColor>{isSession ? 'The agent has changed nothing yet.' : 'Nothing changed since the last commit.'}</Text>
           )}
           {files.map((file, index) => {
             const count = comments.filter(c => c.path === file.path).length
@@ -1487,7 +1496,7 @@ export const register: Register = (on, options) => {
             const repoLabel = file.path.slice(0, file.path.length - file.repoPath.length).replace(/\/$/, '') || '.'
             return (
               <Box flexDirection="column">
-                {isFirstOfRepo && <Text bold color="magenta">{`▸ ${repoLabel}`}</Text>}
+                {isFirstOfRepo && <Text bold color="blue">{`▸ ${repoLabel}`}</Text>}
                 <Box flexDirection="row" paddingLeft={hasSeveralRepos ? 2 : 0}>
                   <Button
                     key={`file:${file.path}`}
@@ -1503,10 +1512,10 @@ export const register: Register = (on, options) => {
                       <Text color="red">{` -${file.removed}`}</Text>
                     </Box>
                   )}
-                  {count > 0 && <Text color="yellow">{`  ${count} comment${count > 1 ? 's' : ''}`}</Text>}
+                  {count > 0 && <Text>{`  💬 ${count}`}</Text>}
                   {(() => {
                     const found = kept.filter(f => f.file === file.path).length
-                    return found > 0 ? <Text color="magenta">{`  ${found} finding${found > 1 ? 's' : ''}`}</Text> : null
+                    return found > 0 ? <Text>{`  🤖 ${found}`}</Text> : null
                   })()}
                 </Box>
               </Box>
@@ -1514,9 +1523,9 @@ export const register: Register = (on, options) => {
           })}
           <Text> </Text>
           <Box flexDirection="row">
-            <Text bold color="magenta">AI review</Text>
+            <Text bold color="blue">AI review</Text>
             <Text dimColor>
-              {findings.length > 0 ? `  ${kept.length} kept · ${findings.length - kept.length} dismissed` : '  attach a review skill, run it, triage what it finds'}
+              {findings.length > 0 ? `  ${kept.length} kept, ${findings.length - kept.length} dismissed` : '  run a review skill, then keep or dismiss what it finds'}
             </Text>
           </Box>
           {status !== null && run === null && <Text dimColor wrap="truncate-end">{status}</Text>}
@@ -1529,7 +1538,7 @@ export const register: Register = (on, options) => {
           )}
           {skills.length > 0 && run !== null && (
             <Box flexDirection="row">
-              <Text color="magenta">{`⏳ ${run.skill} running…  `}</Text>
+              <Text>{`${run.skill} is reviewing…  `}</Text>
               <Button key="run-cancel" plain label="Cancel" onPress={() => void cancelAiReview($)} />
             </Box>
           )}
@@ -1558,17 +1567,17 @@ export const register: Register = (on, options) => {
           {listed.map(f => finding(f, true))}
           <Text> </Text>
           {toSend > 0 && (
-            <Input key="summary" label="Summary (optional)" placeholder="Enter submits the review" onSubmit={value => void submitReview($, value)} />
+            <Input key="summary" label="Message (optional)" placeholder="Enter sends the review" onSubmit={value => void submitReview($, value)} />
           )}
           <Box flexDirection="row">
             {toSend > 0 && (
-              <Button key="submit" label={`Submit review (${toSend})`} variant="primary" hotkey="s" onPress={() => void submitReview($, '')} />
+              <Button key="submit" label={`Send review (${toSend})`} variant="primary" hotkey="s" onPress={() => void submitReview($, '')} />
             )}
             {canAccept && <Button key="accept" label="✓ All good" variant="primary" hotkey="a" onPress={() => void acceptReview($)} />}
             {(toSend > 0 || canAccept) && <Text> </Text>}
             <Button
               key="scope"
-              label={isSession ? 'Since HEAD' : 'This session'}
+              label={isSession ? 'Since last commit' : 'This session only'}
               hotkey="v"
               onPress={() => void update($, reviewScopeState, () => (isSession ? 'head' : 'session')).then(() => loadChangedFiles($))}
             />
@@ -1629,11 +1638,14 @@ export const register: Register = (on, options) => {
             return (
               <Box flexDirection="column" paddingLeft={2}>
                 <Box flexDirection="row">
-                  <Text color="yellow">{`💬 ${anchorLabel(comment)}: ${first}  `}</Text>
-                  <Button key={`uncomment:${comment.id}`} plain label="✕" onPress={() => void removeReviewComment($, comment.id)} />
+                  <Text dimColor>{`💬 ${anchorLabel(comment)}  `}</Text>
+                  <Button key={`uncomment:${comment.id}`} plain dimColor label="✕" onPress={() => void removeReviewComment($, comment.id)} />
                 </Box>
-                {more.map(line => (
-                  <Text color="yellow">{`   ${line}`}</Text>
+                {[first, ...more].map(line => (
+                  <Box flexDirection="row">
+                    <Text dimColor>{'┃ '}</Text>
+                    <Text wrap="wrap">{line === '' ? ' ' : line}</Text>
+                  </Box>
                 ))}
               </Box>
             )
@@ -1647,7 +1659,7 @@ export const register: Register = (on, options) => {
               key="comment"
               value=""
               label={draft.length > 0 ? '  │' : `Comment ${anchorLabel(selection)}`}
-              placeholder={draft.length > 0 ? 'Next line; Enter saves, end with \\ to go on' : 'Enter saves · end a line with \\ for another'}
+              placeholder={draft.length > 0 ? 'Next line. Enter saves, end with \\ to add one more' : 'Enter saves. End with \\ to add a line'}
               autoFocus
               onSubmit={value => void submitCommentLine($, value)}
             />
@@ -1686,14 +1698,14 @@ export const register: Register = (on, options) => {
           )}
           <Text> </Text>
           {comments.length + kept.length > 0 ? (
-            <Button key="submit" label={`Submit (${comments.length + kept.length})`} variant="primary" onPress={() => void submitReview($, '')} />
+            <Button key="submit" label={`Send (${comments.length + kept.length})`} variant="primary" onPress={() => void submitReview($, '')} />
           ) : (
             <Button key="accept" label="✓ All good" variant="primary" onPress={() => void acceptReview($)} />
           )}
         </Box>
         <Text dimColor>
           {selection === null
-            ? 'Click + to comment a line; click a second + for a range (removed and added lines alike).'
+            ? 'Click + to comment a line, a second + for a range.'
             : picked !== null && picked.from === picked.to
               ? `Selected ${anchorLabel(selection)}: click another + to extend, the same one to clear.`
               : `Selected ${anchorLabel(selection)}.`}
@@ -1784,14 +1796,14 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PLAN_PANE }, async ($, e) => {
-    const { Box, Text, Button, Input } = $.ui.resolve(e)
+    const { Box, Text, Button, Input, Markdown, Code } = $.ui.resolve(e)
     const doc = await read($, planDocState)
     const close = <Button key="plan-close" label="Close" role="dismiss" onPress={() => void $.ui.close({ id: PLAN_PANE })} />
     if (doc === null)
       return (
         <Box flexDirection="column">
           <Text bold color="cyan">Plan</Text>
-          <Text dimColor>No plan yet: in the Plan phase, the agent presents its plan with present_plan.</Text>
+          <Text dimColor>No plan yet. In the Plan phase, the agent's plan shows up here for you to approve.</Text>
           {close}
         </Box>
       )
@@ -1805,26 +1817,40 @@ export const register: Register = (on, options) => {
     const width = String(lines.length).length
     const selection = picked === null ? null : { start: picked.from + 1, end: picked.to + 1 }
 
-    const lineText = (kind: string, text: string) =>
-      kind === 'heading' ? (
-        <Text bold color="cyan">{text}</Text>
-      ) : kind === 'code' || kind === 'fence' ? (
-        <Text dimColor>{text}</Text>
-      ) : (
-        <Text>{text === '' ? ' ' : text}</Text>
+    // Each line drawn as Claude's replies are, one line at a time so each keeps
+    // its +: prose, headings and bullets through Markdown (a bullet's nesting
+    // from its level, since a line alone loses it), code through the engine's
+    // highlighter in the fence's language. A fence shows only its language; a
+    // table row stays plain, a row alone not being a table.
+    const lineText = (l: PlanLine) => {
+      if (l.kind === 'blank') return <Text> </Text>
+      if (l.kind === 'fence') return <Text dimColor>{l.opens === true ? (l.lang ?? 'code') : ' '}</Text>
+      if (l.kind === 'code')
+        return (
+          <Box paddingLeft={2} flexGrow={1} overflow="hidden">
+            <Code source={drawable(l.text) || ' '} {...(l.lang !== undefined ? { language: l.lang } : {})} wrap="truncate-end" />
+          </Box>
+        )
+      if (isTableRow(l.text)) return <Text wrap="truncate-end">{l.text}</Text>
+      return (
+        <Box paddingLeft={(l.level ?? 0) * 2} flexGrow={1}>
+          <Markdown text={drawable(l.kind === 'heading' ? l.text : l.text.trimStart())} />
+        </Box>
       )
+    }
 
     return (
       <Box flexDirection="column">
         <Box flexDirection="row">
           <Text bold color="cyan">{`Plan v${doc.version}`}</Text>
-          {doc.title !== '' && <Text bold>{` · ${doc.title}`}</Text>}
-          <Text dimColor>{`  ${isOpen ? 'awaiting your verdict' : VERDICT_WORD[doc.decided!]} · ${comments.length} comment(s)`}</Text>
+          {doc.title !== '' && <Text bold>{`  ${doc.title}`}</Text>}
+          <Text dimColor>{`  ${isOpen ? 'waiting for you' : VERDICT_WORD[doc.decided!]}`}</Text>
         </Box>
+        <Text dimColor>{counted(comments.length, 'comment')}</Text>
         {isOpen && (
           <Text dimColor>
             {selection === null
-              ? 'Click + to comment a line; click a second + for a range.'
+              ? 'Click + to comment a line, a second + for a range.'
               : picked!.from === picked!.to
                 ? `Selected ${planSpan(selection)}: click another + to extend, the same one to clear.`
                 : `Selected ${planSpan(selection)}.`}
@@ -1849,18 +1875,21 @@ export const register: Register = (on, options) => {
                   <Text> </Text>
                 )}
                 <Text dimColor>{` ${String(l.line).padStart(width)} `}</Text>
-                {lineText(l.kind, l.text)}
+                {lineText(l)}
               </Box>
               {here.map(comment => {
                 const [first = '', ...more] = comment.body.split('\n')
                 return (
                   <Box flexDirection="column" paddingLeft={2}>
                     <Box flexDirection="row">
-                      <Text color="yellow">{`💬 ${planSpan(comment)}: ${first}  `}</Text>
-                      {isOpen && <Button key={`plan-uncomment:${comment.id}`} plain label="✕" onPress={() => void removePlanComment($, comment.id)} />}
+                      <Text dimColor>{`💬 ${planSpan(comment)}  `}</Text>
+                      {isOpen && <Button key={`plan-uncomment:${comment.id}`} plain dimColor label="✕" onPress={() => void removePlanComment($, comment.id)} />}
                     </Box>
-                    {more.map(line => (
-                      <Text color="yellow">{`   ${line}`}</Text>
+                    {[first, ...more].map(line => (
+                      <Box flexDirection="row">
+                        <Text dimColor>{'┃ '}</Text>
+                        <Text wrap="wrap">{line === '' ? ' ' : line}</Text>
+                      </Box>
                     ))}
                   </Box>
                 )
@@ -1871,7 +1900,7 @@ export const register: Register = (on, options) => {
                   key="plan-comment"
                   value=""
                   label={draft.length > 0 ? '  │' : `Comment ${planSpan(selection)}`}
-                  placeholder={draft.length > 0 ? 'Next line; Enter saves, end with \\ to go on' : 'Enter saves · end a line with \\ for another'}
+                  placeholder={draft.length > 0 ? 'Next line. Enter saves, end with \\ to add one more' : 'Enter saves. End with \\ to add a line'}
                   autoFocus
                   onSubmit={value => void submitPlanCommentLine($, value)}
                 />
@@ -1896,7 +1925,7 @@ export const register: Register = (on, options) => {
               key="plan-reason"
               value=""
               label="Why reject?"
-              placeholder="The reason, told to the agent; Enter rejects"
+              placeholder="Tell the agent why. Enter rejects"
               autoFocus
               onSubmit={value => void sendPlanVerdict($, 'reject', value)}
             />
@@ -1910,7 +1939,7 @@ export const register: Register = (on, options) => {
               <Text> </Text>
               {canSend('refine', comments, note) && (
                 <Box flexDirection="row">
-                  <Button key="plan-refine" label={`✎ Refine (${comments.length})`} onPress={() => void sendPlanVerdict($, 'refine')} />
+                  <Button key="plan-refine" label={`✎ Ask for changes (${comments.length})`} onPress={() => void sendPlanVerdict($, 'refine')} />
                   <Text> </Text>
                 </Box>
               )}
@@ -1970,8 +1999,8 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     return (
       <Box flexDirection="row">
-        <Text bold color="black" backgroundColor="yellow">{' ? PHASE '}</Text>
-        <Text color="yellow">{`  The agent asks to switch to ${request.to}${request.reason !== '' ? `: ${request.reason}` : ''}  `}</Text>
+        <Text bold color="black" backgroundColor={PHASE_STYLE[request.to].color}>{` ? ${request.to.toUpperCase()} `}</Text>
+        <Text>{`  The agent asks to move to ${request.to} (${phaseRule(request.to)})${request.reason !== '' ? `: ${request.reason}` : ''}  `}</Text>
         <Button key="band-approve" label="Approve" hotkey="y" variant="primary" onPress={() => void decide($, true)} />
         <Text> </Text>
         <Button key="band-deny" label="Deny" hotkey="n" onPress={() => void decide($, false)} />
@@ -1996,7 +2025,7 @@ export const register: Register = (on, options) => {
           {PHASES.map(p => (
             <Box flexDirection="row">
               {p === phase ? (
-                <Text dimColor>{`[${p}]`}</Text>
+                <Text bold color={style.color}>{p}</Text>
               ) : (
                 <Button key={`pane-phase:${p}`} plain dimColor label={p} hotkey={p.charAt(0)} onPress={() => void operatorSetPhase($, p)} />
               )}
@@ -2006,7 +2035,7 @@ export const register: Register = (on, options) => {
         </Box>
         {request !== null && (
           <Box flexDirection="column">
-            <Text color="yellow">{`The agent asks to switch: ${phase} → ${request.to}`}</Text>
+            <Text bold>{`The agent asks to move to ${request.to} (${phaseRule(request.to)})`}</Text>
             <Text dimColor>{request.reason}</Text>
             <Box flexDirection="row">
               <Button key="approve" label="Approve" hotkey="y" variant="primary" autoFocus onPress={() => void decide($, true)} />

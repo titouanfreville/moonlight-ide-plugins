@@ -1,11 +1,17 @@
 # MoonlightCode
 
+<!-- Marketplaces -->
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=titouanfreville.moonlight-ai"><img alt="VS Marketplace" src="https://vsmarketplacebadges.dev/version-short/titouanfreville.moonlight-ai.svg?label=VS%20Marketplace&color=blue&style=for-the-badge"></a>
+  <a href="https://open-vsx.org/extension/titouanfreville/moonlight-ai"><img alt="Open VSX" src="https://img.shields.io/open-vsx/v/titouanfreville/moonlight-ai?label=Open%20VSX&color=blue&style=for-the-badge"></a>
+  <a href="https://plugins.jetbrains.com/plugin/34789"><img alt="JetBrains Marketplace" src="https://img.shields.io/jetbrains/plugin/v/io.github.titouanfreville.moonlight.core?label=JetBrains%20Marketplace&color=blue&style=for-the-badge"></a>
+</p>
+
+<!-- Project -->
 [![CI](https://github.com/titouanfreville/moonlight-ide-plugins/actions/workflows/ci.yml/badge.svg)](https://github.com/titouanfreville/moonlight-ide-plugins/actions/workflows/ci.yml)
 [![Nightly](https://github.com/titouanfreville/moonlight-ide-plugins/actions/workflows/nightly.yml/badge.svg)](https://github.com/titouanfreville/moonlight-ide-plugins/actions/workflows/nightly.yml)
 [![Release](https://github.com/titouanfreville/moonlight-ide-plugins/actions/workflows/release.yml/badge.svg)](https://github.com/titouanfreville/moonlight-ide-plugins/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/titouanfreville/moonlight-ide-plugins?label=release&sort=semver)](https://github.com/titouanfreville/moonlight-ide-plugins/releases/latest)
-[![VS Marketplace](https://vsmarketplacebadges.dev/version-short/titouanfreville.moonlight-ai.svg?label=VS%20Marketplace&color=blue)](https://marketplace.visualstudio.com/items?itemName=titouanfreville.moonlight-ai)
-[![Open VSX](https://img.shields.io/open-vsx/v/titouanfreville/moonlight-ai?label=Open%20VSX)](https://open-vsx.org/extension/titouanfreville/moonlight-ai)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 Governance for a fleet of Claude Code sessions. Sessions are center-stage, and the
@@ -21,7 +27,7 @@ that governs anything; the editor and the IDE are both clients of it, and neithe
 required by the other.
 
 ```text
-   VS Code extensions                    the desktop IDE
+   VS Code / JetBrains plugins           the desktop IDE
    (your editor, gated)                  (mission control)
             \                                   /
              \____  HTTP on 127.0.0.1  ________/
@@ -46,10 +52,14 @@ Headless — no GPUI, no Metal, no Vulkan — so it runs anywhere the rest does.
 [`apps/daemon`](apps/daemon), served by [`crates/control`](crates/control) and
 [`crates/trust`](crates/trust).
 
-### 2. The VS Code extensions
+### 2. The editor plugins — VS Code and JetBrains
 
-Governance inside the editor you already use. Six extensions: a core that owns the
-connection, four features, and a pack that installs the set.
+Governance inside the editor you already use.
+
+#### VS Code extensions
+
+Six extensions: a core that owns the connection, four features, and a pack that installs
+the set.
 
 **Install the pack** — it pulls in the other five:
 
@@ -73,6 +83,24 @@ and none is on `PATH`, `moonlight-core` downloads `moonlightd` for your platform
 verifies it against a hash pinned when the release was built, and starts it.
 
 Source and development notes: [`clients/vscode`](clients/vscode).
+
+#### JetBrains plugins
+
+The same features for IntelliJ IDEA, PyCharm, WebStorm and the other JetBrains IDEs,
+published to the [JetBrains Marketplace](https://plugins.jetbrains.com/search?search=MoonlightCode)
+on every release. Install from **Settings → Plugins → Marketplace** and search for
+"MoonlightCode".
+
+| Plugin | Version | What it adds |
+| --- | --- | --- |
+| [MoonlightCode Core](https://plugins.jetbrains.com/plugin/34789) | [![v](https://img.shields.io/jetbrains/plugin/v/io.github.titouanfreville.moonlight.core?label=)](https://plugins.jetbrains.com/plugin/34789) | The shared connection, session state and owned terminals. Everything else depends on it. |
+| [MoonlightCode Status](https://plugins.jetbrains.com/plugin/34790) | [![v](https://img.shields.io/jetbrains/plugin/v/io.github.titouanfreville.moonlight.status?label=)](https://plugins.jetbrains.com/plugin/34790) | Gating indicator and Claude usage readout in the status bar. |
+| [MoonlightCode Session Control](https://plugins.jetbrains.com/plugin/34791) | [![v](https://img.shields.io/jetbrains/plugin/v/io.github.titouanfreville.moonlight.session-control?label=)](https://plugins.jetbrains.com/plugin/34791) | Adopt sessions, set their phase, start governed ones. |
+| [MoonlightCode AI Review](https://plugins.jetbrains.com/plugin/34793) | [![v](https://img.shields.io/jetbrains/plugin/v/io.github.titouanfreville.moonlight.ai-review?label=)](https://plugins.jetbrains.com/plugin/34793) | Review a session's diff against its own baseline, with inline comments delivered back to it. |
+| [MoonlightCode Agentic Support](https://plugins.jetbrains.com/plugin/34792) | [![v](https://img.shields.io/jetbrains/plugin/v/io.github.titouanfreville.moonlight.agentic-support?label=)](https://plugins.jetbrains.com/plugin/34792) | The plan gate and held approvals — where a blocked session is answered. |
+
+JetBrains reviews every new version by hand before it goes live, so the Marketplace can
+trail the GitHub release by a day or two.
 
 ### 3. The desktop IDE
 

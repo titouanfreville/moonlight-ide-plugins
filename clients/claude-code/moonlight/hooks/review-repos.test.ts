@@ -45,7 +45,7 @@ test('Review panel: a folder of repos lists each repo, diffs inside it', async (
 
   const ui = await $.ui.mount({ plugin: 'moonlightcode', surface: 'terminal', ...PANE } as never)
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /2 file\(s\) in 2 repos/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /2 files in 2 repos/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /▸ api/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /▸ web/ })).toBeDefined()
 
@@ -56,6 +56,6 @@ test('Review panel: a folder of repos lists each repo, diffs inside it', async (
   // The comment carries the path from the session root, repo folder first.
   await ui.press({ key: 'line:2' })
   await ui.input({ key: 'comment', text: 'Check' })
-  expect(await ui.find({ type: 'Text', text: /api\/src\/f\.ts:1: Check/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /💬 api\/src\/f\.ts:1/ })).toBeDefined()
   await ui.unmount()
 })

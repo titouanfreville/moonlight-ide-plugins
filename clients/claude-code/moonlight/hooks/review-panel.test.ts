@@ -44,7 +44,7 @@ test('Review panel: open a file, click a line, comment it', async ($, on) => {
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'moonlightcode', surface, ...PANE } as never)
     await ui.press({ key: 'refresh' })
-    expect(await ui.find({ type: 'Text', text: /1 file\(s\)/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /1 file, / })).toBeDefined()
 
     await ui.press({ key: 'file:src/f.ts' })
     // Lines are drawn by the engine's diff highlighter, one Code per line.
@@ -55,14 +55,14 @@ test('Review panel: open a file, click a line, comment it', async ($, on) => {
     expect(await ui.find({ key: 'comment' })).toBeDefined()
 
     await ui.input({ key: 'comment', text: 'Why 3?' })
-    expect(await ui.find({ type: 'Text', text: /src\/f\.ts:2: Why 3\?/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Why 3\?/ })).toBeDefined()
 
     // A changed block: the removed line, then the added one under it.
     await ui.press({ key: 'line:2' })
     await ui.press({ key: 'line:3' })
     expect(await ui.find({ type: 'Text', text: /Selected src\/f\.ts:2 \(\+ removed 2\)/ })).toBeDefined()
     await ui.input({ key: 'comment', text: 'Block' })
-    expect(await ui.find({ type: 'Text', text: /src\/f\.ts:2 \(\+ removed 2\): Block/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Block$/ })).toBeDefined()
 
     commented += 2
     await ui.press({ key: 'back' })
@@ -124,7 +124,7 @@ test('Review panel: side by side when wide, comment the new side, toggle back', 
   expect(await ui.find({ key: 'left:1' })).toBeDefined()
   await ui.press({ key: 'right:2' })
   await ui.input({ key: 'comment', text: 'Right side' })
-  expect(await ui.find({ type: 'Text', text: /src\/f\.ts:2: Right side/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Right side$/ })).toBeDefined()
 
   await ui.press({ key: 'layout' })
   expect(await ui.find({ key: 'left:1' })).toBeUndefined()

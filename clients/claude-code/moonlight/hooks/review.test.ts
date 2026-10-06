@@ -23,6 +23,7 @@ import {
   parseRepoDirs,
   toSplitRows,
   untrackedCount,
+  counted,
 } from './review'
 
 test('lineHunk renders one row as a one-line hunk the engine can draw', () => {
@@ -175,4 +176,10 @@ test('anchorOfRows: a range across a changed block covers both sides', () => {
 test('untrackedCount: lines of a text file, a binary one marked', () => {
   expect(untrackedCount('7\t0\tnew.md\n')).toEqual({ added: 7, removed: 0 })
   expect(untrackedCount('-\t-\tlogo.png\n')).toEqual({ skipped: 'binary' })
+})
+
+test('counted reads as a person would say it', () => {
+  expect(counted(0, 'file')).toBe('0 files')
+  expect(counted(1, 'comment')).toBe('1 comment')
+  expect(counted(3, 'finding')).toBe('3 findings')
 })

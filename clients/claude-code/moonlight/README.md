@@ -3,7 +3,7 @@
 A Claude Code plugin of function hooks that brings MoonlightCode into the session itself, without the daemon:
 
 - **Phases**: the daemon's five (Plan → Auto → Test → Review → Commit). Plan and Commit keep project files read-only while Claude Code runs in auto mode; Auto, Test and Review let it write. Per project, Plan by default.
-- **Plan panel**: the agent presents its plan with `present_plan`; you comment its lines and answer Approve, Refine or Reject. Claude Code's own plan mode is not used: it would leave auto mode.
+- **Plan panel**: the agent presents its plan with `present_plan`; you comment its lines and answer Approve, Ask for changes, or Reject. Claude Code's own plan mode is not used: it would leave auto mode.
 - **Review panel**: the changed files, each file's diff, comments anchored to diff lines, and the triage of what an AI review skill found.
 
 Design and test evidence: [`.bmad-output/spike-1-mod-findings.md`](../../../.bmad-output/spike-1-mod-findings.md).
@@ -48,7 +48,9 @@ The phase is **per project**, shared by every session open on it. A session that
 
 Loading it turns the gate on for the session's project, in **Plan**: Bash runs under Claude Code's sandbox with the project read-only, and only the notes folders (`.ai/`, `.bmad-output/`, `.bmad/`) are writable. Type `/phase auto` to work normally.
 
-The phase shows **under the prompt**, on the hint line: the current one as a badge (**◐ PLAN** yellow, **● AUTO** green, **● TEST** cyan, **● REVIEW** magenta, **■ COMMIT** red), its rule in the same colour, then a dim **· next: …** that steps to the next phase, then Claude Code's own hint. `/phase` opens the Moonlight pane: the badge, then the five phases as dim words to jump to any. When the agent asks for a phase change, a band shows **above the prompt** with **Approve** (`y`) and **Deny** (`n`); otherwise nothing is drawn there.
+The phase shows **under the prompt**, on the hint line: the current one as a badge (**◐ PLAN** yellow, **● AUTO** green, **● TEST** cyan, **● REVIEW** blue, **■ COMMIT** red), its rule in the same colour, then a dim **· next: …** that steps to the next phase, then Claude Code's own hint. `/phase` opens the Moonlight pane: the badge, then the five phases as dim words to jump to any. When the agent asks for a phase change, a band shows **above the prompt** with **Approve** (`y`) and **Deny** (`n`); otherwise nothing is drawn there.
+
+The panes keep colour for state: the phase badge carries its phase's colour, the diff keeps Claude Code's own. The rest is plain or dim text. 🤖 marks what the AI reviewer found, with its severity as a word (**high**, medium, dim low); 💬 marks your comments, whose text hangs under them behind a `┃` rail.
 
 The panes, the hint and the band draw on the **terminal and desktop** surfaces. The VS Code extension draws no mod UI today, so use the commands there.
 
@@ -69,7 +71,7 @@ The panes, the hint and the band draw on the **terminal and desktop** surfaces. 
 | `/ml-review` | Open or close the Review panel, and list changed files and comments |
 | `/ml-review comment <path:line[-end]> <text>` | Comment a line or a range of the current file; `\n` starts a new line |
 | `/ml-review uncomment <id>` | Remove a comment |
-| `/ml-review submit [summary]` | Send every comment to the agent as one message, then clear them |
+| `/ml-review submit [summary]` | Send every comment to the agent as one message (the panel's **Send review**), then clear them |
 | `/ml-review accept` | Close the review: the next one starts from here |
 | `/ml-review run [skill]` | Run one review skill (the only attached one, else name any installed one; your list is left as it is) |
 | `/ml-review cancel` | Free the panel from a review that will not answer |
@@ -84,11 +86,11 @@ The panes, the hint and the band draw on the **terminal and desktop** surfaces. 
 In the Plan phase, the agent proposes a plan by calling `mcp__moonlightcode__present_plan` with the whole plan as Markdown (and an optional title). The tool answers at once and tells the agent to stop and wait; the verdict reaches it later as a `[moonlight]` prompt, which starts a turn. `EnterPlanMode` and `ExitPlanMode` are refused in Plan, with a pointer to `present_plan`: Claude Code's plan mode would leave auto mode.
 
 - Each call is the session's next version (**v1**, **v2**…), saved to `~/.moonlight/mod/sessions/<session>/plan/v<N>.md`. A new version starts with no comments.
-- The **Plan** pane opens with focus: **Plan vN · title**, then the plan line by line, numbered (headings bold cyan, code dim).
+- The **Plan** pane opens with focus: **Plan vN** and its title, then the plan line by line, numbered, each drawn as Claude's replies are: headings, bullets (nested by their indent), **bold**, `code` and links through Markdown; code blocks highlighted in their fence's language, the fence shown only as that language. Table rows stay plain text, since a row drawn alone is not a table.
 - Click the **`+`** before a line to comment it; click a second `+` to extend to a range; click the same single line again to clear. `•` marks a line with a comment, `✕` removes one. Type the comment, then Enter; end a line with `\` to write several.
 - **Note (optional)**: an overall note for the agent; Enter saves it.
 - **✓ Approve**: moves the phase to Auto (from Plan, or Commit), then tells the agent to implement the plan, with your note and comments to keep in mind.
-- **✎ Refine**, once there is a comment or a note: sends them, each comment with the plan lines it is about; the agent revises and calls `present_plan` again.
+- **✎ Ask for changes**, once there is a comment or a note: sends them, each comment with the plan lines it is about; the agent revises and calls `present_plan` again.
 - **✕ Reject** asks for a reason (required), then tells the agent to stop. The phase does not change.
 - The note is sent as typed, Enter or not; a reject reason or a `/ml-plan` note goes with it.
 - After a verdict, the version shows as decided. If the send fails, a toast says why, an approval's phase change is undone, and the comments and the note come back, unless the agent has presented a newer version meanwhile.
@@ -107,7 +109,7 @@ In the terminal's fullscreen layout, at least 110 columns wide, the panel docks 
   - `▌` marks the selection, `•` a line with a comment.
   - Type the comment, then press Enter. For several lines, end a line with `\` before Enter: it joins the draft shown above the field, and the next line without `\` saves the comment. `✕` removes a comment.
   - `b` goes back to the files view.
-- **Submit**: once there is a comment, **Submit review** (`s` in the files view, **Submit** in a file's header) sends every comment to the agent as one message: grouped by file, in line order, each with the lines it is about. The files view's **Summary** field adds an optional overall note; Enter there submits too. The review goes in as a prompt, so the agent starts on it at once, or as soon as its current turn ends. If the send fails, the comments come back.
+- **Send**: once there is a comment, **Send review** (`s` in the files view, **Send** in a file's header) sends every comment to the agent as one message: grouped by file, in line order, each with the lines it is about. The files view's **Summary** field adds an optional overall note; Enter there submits too. The review goes in as a prompt, so the agent starts on it at once, or as soon as its current turn ends. If the send fails, the comments come back.
 
 - **✓ All good** (`a` in the files view, also in a file's header, or `/ml-review accept`), when no comment is pending: accepts the review. The agent is told all is good, the saved copies are dropped, and the next review shows only what the agent changes from then on.
 
@@ -131,16 +133,16 @@ Which skills are attached, first match wins:
 - When the running review's skill starts, the mod appends to its prompt the review's scope (the panel's files, with the saved copies to diff against) and asks for one `moonlight-findings` JSON block at the end, the format MoonlightCode's desktop panel reads. Only that skill's prompt gets it, not an attached skill it calls in turn. How the skill reviews is left to it.
 - When an answer ends with that block, its findings load into the panel (outside a review run, only if you have not started triaging: a note or a dismissal keeps the current findings), worst first: in the files view's **AI review** list, and under their line in the file's diff. A block that does not parse shows as an error, never as a clean review; a review that ends without one says so.
 - **Triage** each finding: **✕ Dismiss** drops it from this pass (**↺ Keep** brings it back); **✎ Note** adds your decision about it, which the agent is told wins over the reviewer.
-- **Submit** sends the kept findings, with your notes, together with your comments, as one message. **✓ All good** waits until no kept finding is left.
+- **Send review** sends the kept findings, with your notes, together with your comments, as one message. **✓ All good** waits until no kept finding is left.
 
 ### What is diffed
 
 - **This session** (the default once Claude has changed a file): each file against a copy the mod saved just before Claude first changed it with Edit, Write or NotebookEdit. No git needed.
   - Copies live in `~/.moonlight/mod/sessions/<session>/baseline/`, out of the agent's reach. A copy is named by its content, so the same content is stored once.
   - Files over 1 MB and binary files are not copied; the panel lists them with the reason.
-  - Changes made through Bash (`sed -i`, a formatter…) have no copy: switch to **Since HEAD** to see them.
+  - Changes made through Bash (`sed -i`, a formatter…) have no copy: switch to **Since last commit** to see them.
   - The copies are dropped on **All good** and on `/clear`. A session that ends otherwise keeps them for `--resume`; after a week without a heartbeat, the next session start removes them.
-- **Since HEAD** (`v` toggles): everything changed against `HEAD`. Untracked files count their lines as added (binary ones say so; past 200 untracked files the rest are listed uncounted). If the session's root is inside a git repository, the panel reviews that repository. Otherwise it looks for repositories up to 4 levels below the root, skipping `node_modules`, `target`, `.venv`, `dist` and `build`, and lists each one's changes under its folder name.
+- **Since last commit** (`v` toggles): everything changed against `HEAD`. Untracked files count their lines as added (binary ones say so; past 200 untracked files the rest are listed uncounted). If the session's root is inside a git repository, the panel reviews that repository. Otherwise it looks for repositories up to 4 levels below the root, skipping `node_modules`, `target`, `.venv`, `dist` and `build`, and lists each one's changes under its folder name.
 
 Paths in comments start from the session root.
 

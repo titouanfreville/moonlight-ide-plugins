@@ -28,7 +28,7 @@ test('Review panel: since HEAD, an untracked file shows its line count', async (
 
   const ui = await $.ui.mount({ plugin: 'moonlightcode', surface: 'terminal', ...PANE } as never)
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /2 file\(s\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /2 files, / })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /\+7/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /\+1/ })).toBeDefined()
   await ui.unmount()

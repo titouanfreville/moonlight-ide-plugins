@@ -5,8 +5,10 @@ export type PlanLineKind = 'heading' | 'bullet' | 'code' | 'fence' | 'blank' | '
 
 // One line of the plan as the panel draws it. `line`: 1-based, as comments and
 // /ml-plan name it. `text`: the line as written. `level`: a heading's depth
-// (`#` count), a bullet's nesting (2 spaces each, from 0).
-export type PlanLine = { line: number; kind: PlanLineKind; text: string; level?: number }
+// (`#` count), a bullet's or a text line's nesting (2 spaces each, from 0).
+// `lang`: a code line's language, from its opening fence (```ts), and on the
+// opening fence itself; `opens`: the fence opens a block (else it closes one).
+export type PlanLine = { line: number; kind: PlanLineKind; text: string; level?: number; lang?: string; opens?: boolean }
 
 export type PlanVerdict = 'approve' | 'refine' | 'reject'
 
@@ -29,21 +31,34 @@ const linesOf = (markdown: string): string[] => {
 // is code, `# x` included.
 export const parsePlan = (markdown: string): PlanLine[] => {
   let isInFence = false
+  let lang = ''
+  const withLang = (l: PlanLine): PlanLine => (lang !== '' ? { ...l, lang } : l)
   return linesOf(markdown).map((text, i): PlanLine => {
     const line = i + 1
     if (FENCE.test(text)) {
       isInFence = !isInFence
-      return { line, kind: 'fence', text }
+      if (!isInFence) return { line, kind: 'fence', text, opens: false }
+      lang = text.trim().replace(/^(```|~~~)/, '').trim().split(/\s+/)[0] ?? ''
+      return withLang({ line, kind: 'fence', text, opens: true })
     }
-    if (isInFence) return { line, kind: 'code', text }
+    if (isInFence) return withLang({ line, kind: 'code', text })
     if (text.trim() === '') return { line, kind: 'blank', text }
     const heading = HEADING.exec(text)
     if (heading !== null) return { line, kind: 'heading', text, level: heading[1]!.length }
     const bullet = BULLET.exec(text)
     if (bullet !== null) return { line, kind: 'bullet', text, level: Math.floor(bullet[1]!.replace(/\t/g, '  ').length / 2) }
-    return { line, kind: 'text', text }
+    const indent = /^\s*/.exec(text)![0].replace(/\t/g, '  ').length
+    return indent >= 2 ? { line, kind: 'text', text, level: Math.floor(indent / 2) } : { line, kind: 'text', text }
   })
 }
+
+// A line as the engine's Markdown and Code elements take it: no control
+// characters but tab, and within their 10000-character limit.
+export const drawable = (text: string): string =>
+  text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').slice(0, 10_000)
+
+// A table row drawn alone is not a table: those lines stay plain text.
+export const isTableRow = (text: string): boolean => /^\s*\|/.test(text)
 
 // Lines `start` to `end` (1-based, inclusive) of the plan.
 export const planExcerpt = (markdown: string, start: number, end: number): string =>

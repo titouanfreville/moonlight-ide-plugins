@@ -49,15 +49,15 @@ test('Review panel: submit sends every comment to the agent; a refused send keep
   await ui.input({ key: 'comment', text: 'Why 3? \\' })
   expect(await ui.find({ type: 'Text', text: /│ Why 3\?/ })).toBeDefined()
   await ui.input({ key: 'comment', text: 'It was 2 before.' })
-  expect(await ui.find({ type: 'Text', text: /src\/f\.ts:2: Why 3\?/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Why 3\?/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /It was 2 before\./ })).toBeDefined()
-  expect(await ui.find({ key: 'submit', text: /Submit \(1\)/ })).toBeDefined()
+  expect(await ui.find({ key: 'submit', text: /Send \(1\)/ })).toBeDefined()
   await ui.press({ key: 'back' })
   await ui.input({ key: 'summary', text: 'One nit' })
 
   // Refused here: the comment comes back, to send again.
   for (let i = 0; i < 100 && (await ui.find({ key: 'submit' })) === undefined; i += 1)
     await new Promise(resolve => setTimeout(resolve, 10))
-  expect(await ui.find({ key: 'submit', text: /Submit review \(1\)/ })).toBeDefined()
+  expect(await ui.find({ key: 'submit', text: /Send review \(1\)/ })).toBeDefined()
   await ui.unmount()
 })

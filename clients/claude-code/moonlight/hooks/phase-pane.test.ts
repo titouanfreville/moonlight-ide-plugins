@@ -19,7 +19,8 @@ test('Phase pane: the five phases, the current one not clickable, none highlight
 
   // No project known in the kit: the phase reads as Plan.
   expect(await ui.find({ key: 'pane-phase:plan' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: '[plan]' })).toBeDefined()
+  const current = (await ui.find({ type: 'Text', text: /^plan$/ })) as unknown as { props: Record<string, unknown> }
+  expect(current.props.color).toBe('yellow')
   for (const phase of ['auto', 'test', 'review', 'commit']) {
     const button = (await ui.find({ key: `pane-phase:${phase}` })) as unknown as { props: Record<string, unknown>; text: string }
     expect(button.text).toBe(phase)

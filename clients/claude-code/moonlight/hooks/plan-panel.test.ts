@@ -33,8 +33,15 @@ test('Plan panel: present_plan opens v1, comment a range, refine, a refused send
 
   const ui = await $.ui.mount({ plugin: 'moonlightcode', surface: 'terminal', ...PANE } as never)
   expect(await ui.find({ type: 'Text', text: /Plan v1/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: / · Cache/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Cache/ })).toBeDefined()
   expect(await ui.find({ key: 'plan-approve' })).toBeDefined()
+  // Lines drawn as Markdown, code through the highlighter in its fence's
+  // language, the fence itself only as that language.
+  expect(await ui.find({ type: 'Markdown', text: '# Add a cache' })).toBeDefined()
+  expect(await ui.find({ type: 'Markdown', text: '- Wrap the client' })).toBeDefined()
+  const code = (await ui.find({ type: 'Code', text: '# code, not heading' })) as unknown as { props: Record<string, unknown> }
+  expect(code.props.language).toBe('ts')
+  expect(await ui.find({ type: 'Text', text: /^ts$/ })).toBeDefined()
   // Nothing to refine yet.
   expect(await ui.find({ key: 'plan-refine' })).toBeUndefined()
 
@@ -44,15 +51,15 @@ test('Plan panel: present_plan opens v1, comment a range, refine, a refused send
   expect(await ui.find({ type: 'Text', text: /Selected lines 3-4/ })).toBeDefined()
   await ui.input({ key: 'plan-comment', text: 'Which client? \\' })
   await ui.input({ key: 'plan-comment', text: 'Name it.' })
-  expect(await ui.find({ type: 'Text', text: /lines 3-4: Which client\?/ })).toBeDefined()
-  expect(await ui.find({ key: 'plan-refine', text: /Refine \(1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Which client\?/ })).toBeDefined()
+  expect(await ui.find({ key: 'plan-refine', text: /Ask for changes \(1\)/ })).toBeDefined()
 
   // Refused here: the comment comes back and the version stays open.
   await ui.press({ key: 'plan-refine' })
   for (let i = 0; i < 100 && (await ui.find({ key: 'plan-refine' })) === undefined; i += 1)
     await new Promise(resolve => setTimeout(resolve, 10))
-  expect(await ui.find({ key: 'plan-refine', text: /Refine \(1\)/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /awaiting your verdict/ })).toBeDefined()
+  expect(await ui.find({ key: 'plan-refine', text: /Ask for changes \(1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /waiting for you/ })).toBeDefined()
 
   // A second plan is v2, its review fresh.
   await $.tool.call({ tool: 'mcp__moonlightcode__present_plan', plan: `${PLAN}\n- Log misses` } as never)

@@ -76,7 +76,7 @@ test('Review panel: shows the session changes against baselines; Accept drops th
 
   const ui = await $.ui.mount({ plugin: 'moonlightcode', surface: 'terminal', ...PANE } as never)
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /this session · 3 file\(s\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /3 files, / })).toBeDefined()
   expect(await ui.find({ key: 'file:src/f.ts', text: /^M +src\/f\.ts/ })).toBeDefined()
   expect(await ui.find({ key: 'file:src/new.ts', text: /^A +src\/new\.ts/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /no diff: binary/ })).toBeDefined()
@@ -89,6 +89,6 @@ test('Review panel: shows the session changes against baselines; Accept drops th
 
   await ui.press({ key: 'accept' })
   expect(removed).toEqual([BASE])
-  expect(await ui.find({ type: 'Text', text: /No changes by the agent since the review started/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The agent has changed nothing yet/ })).toBeDefined()
   await ui.unmount()
 })

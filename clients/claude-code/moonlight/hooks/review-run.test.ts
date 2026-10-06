@@ -34,12 +34,12 @@ test('Review panel: a run ends with its own turn, even without a findings block'
 
   const ui = await $.ui.mount({ plugin: 'moonlightcode', surface: 'terminal', ...PANE } as never)
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /⏳ bmad-code-review running/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /bmad-code-review is reviewing/ })).toBeDefined()
 
   // A subagent's turn ends: not the run's.
   await $.turn.complete({ ...(turnEnd('t-sub') as object), agentId: 'a1' } as never)
   await ui.press({ key: 'refresh' })
-  expect(await ui.find({ type: 'Text', text: /⏳ bmad-code-review running/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /bmad-code-review is reviewing/ })).toBeDefined()
 
   // The run's turn ends with no block: the run ends, and says why.
   await $.turn.complete(turnEnd('t9'))

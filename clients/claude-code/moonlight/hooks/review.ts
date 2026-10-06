@@ -29,6 +29,9 @@ export type ChangedFile = {
   skipped?: string
 }
 
+// "1 comment", "3 comments": what a person reads, never "comment(s)".
+export const counted = (count: number, word: string): string => `${count} ${word}${count === 1 ? '' : 's'}`
+
 // ---- Baselines: each file as it was before the agent first changed it ----
 
 // Larger files, and binary ones, are not copied: the panel says why instead.
