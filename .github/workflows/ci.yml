@@ -12,8 +12,46 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Which clients this change touches; the jobs below skip the ones it does not.
+  # A skipped job reports success, so it does not block a required check.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      vscode: ${{ steps.filter.outputs.vscode }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'apps/desktop/**'
+              - 'apps/daemon/**'
+              - 'packaging/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'rustfmt.toml'
+              - '.github/workflows/**'
+            vscode:
+              - 'clients/vscode/**'
+              - 'clients/claude-code/**'
+              - '.github/workflows/**'
+            jetbrains:
+              - 'clients/jetbrains/**'
+              - 'clients/claude-code/**'
+              - '.github/workflows/**'
+
   # Formatting + domain-purity are OS-independent — run once on Linux (cheapest).
   format:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -38,6 +76,8 @@ jobs:
   # platform-gated code (Metal vs Vulkan, PTY, etc.) only compiles on its own OS.
   test:
     name: test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     timeout-minutes: 60
     runs-on: ${{ matrix.os }}
     strategy:
@@ -105,6 +145,8 @@ jobs:
   # `npm test` runs `npm run compile` first, so this is the type check as well.
   vscode:
     name: vscode extensions
+    needs: changes
+    if: needs.changes.outputs.vscode == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

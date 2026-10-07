@@ -26,13 +26,56 @@ jobs:
           SHA: ${{ github.sha }}
         run: echo "version=nightly-${SHA:0:7}" >> "$GITHUB_OUTPUT"
 
+  # Which parts this push touched; only those are built. The Claude Code plugin counts
+  # for both IDE clients, since each bundles it, and a workflow change counts for all,
+  # so a CI edit is exercised once. The daemon builds whenever anything does: the IDE
+  # packages pin its hashes. A push that touches none (docs, the lab) builds nothing
+  # and leaves the previous nightly in place; otherwise the nightly carries only what
+  # this push rebuilt.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      any: ${{ steps.filter.outputs.changes != '[]' }}
+      rust: ${{ steps.filter.outputs.rust }}
+      vscode: ${{ steps.filter.outputs.vscode }}
+      jetbrains: ${{ steps.filter.outputs.jetbrains }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'apps/desktop/**'
+              - 'apps/daemon/**'
+              - 'packaging/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'rustfmt.toml'
+              - '.github/workflows/**'
+            vscode:
+              - 'clients/vscode/**'
+              - 'clients/claude-code/**'
+              - '.github/workflows/**'
+            jetbrains:
+              - 'clients/jetbrains/**'
+              - 'clients/claude-code/**'
+              - '.github/workflows/**'
+
   build:
-    needs: version
+    needs: [version, changes]
+    if: needs.changes.outputs.any == 'true'
     uses: ./.github/workflows/build.yml
     secrets: inherit
     with:
       version: ${{ needs.version.outputs.version }}
       tag: nightly
+      desktop: ${{ needs.changes.outputs.rust == 'true' }}
+      vscode: ${{ needs.changes.outputs.vscode == 'true' }}
+      jetbrains: ${{ needs.changes.outputs.jetbrains == 'true' }}
 
   publish:
     needs: [version, build]
@@ -75,8 +118,9 @@ jobs:
   # is satisfied by the daemons and .vsix alone. Nightly is the canary for main, and
   # that removed the signal exactly where it was cheapest to see.
   verify-desktop:
-    needs: [version, publish]
-    if: always() && needs.publish.result == 'success'
+    needs: [version, changes, publish]
+    # Only a nightly that built the desktop app is expected to carry it.
+    if: always() && needs.publish.result == 'success' && needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

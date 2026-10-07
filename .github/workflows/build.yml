@@ -30,6 +30,21 @@ on:
         required: false
         default: ''
         type: string
+      desktop:
+        description: Build the desktop app. Off when a push leaves the Rust code untouched.
+        required: false
+        default: true
+        type: boolean
+      vscode:
+        description: Package the VS Code extensions. Off when a push leaves them untouched.
+        required: false
+        default: true
+        type: boolean
+      jetbrains:
+        description: Package the JetBrains plugins. Off when a push leaves them untouched.
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -40,6 +55,7 @@ env:
 jobs:
   build:
     name: build (${{ matrix.target }})
+    if: inputs.desktop
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     # The desktop app must not be able to stop the extensions shipping. It is the
@@ -411,6 +427,7 @@ jobs:
   vsix:
     name: vsix
     needs: daemon
+    if: inputs.vscode
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -473,6 +490,7 @@ jobs:
   jetbrains:
     name: jetbrains
     needs: daemon
+    if: inputs.jetbrains
     runs-on: ubuntu-latest
     timeout-minutes: 40
     # Same trade as the desktop job: a JetBrains failure must not stop the VS Code
