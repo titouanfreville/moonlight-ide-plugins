@@ -17,6 +17,8 @@ import io.github.titouanfreville.moonlight.client.SessionStatus
 import io.github.titouanfreville.moonlight.client.sessionLabel
 import io.github.titouanfreville.moonlight.client.shortId
 import io.github.titouanfreville.moonlight.core.ActiveSession
+import io.github.titouanfreville.moonlight.core.Governor
+import io.github.titouanfreville.moonlight.core.ModEntry
 import io.github.titouanfreville.moonlight.core.MoonlightApi
 import io.github.titouanfreville.moonlight.core.SessionLaunches
 import io.github.titouanfreville.moonlight.core.describePanelKey
@@ -103,7 +105,7 @@ object SessionOps {
             )
         }) { phase ->
             background(project) {
-                core.control.setPhase(session.sessionId, phase)
+                setSessionPhase(session.sessionId, phase)
                 core.refresh()
                 info(project, "\"$label\" → ${phase.name}. The phase is pinned now: a manual pick overrides auto-advance.")
             }
@@ -118,8 +120,26 @@ object SessionOps {
             return
         }
         background(project) {
-            core.control.advancePhase(target.sessionId)
+            if (core.governor(target.sessionId) == Governor.Mod) {
+                setSessionPhase(target.sessionId, nextPhase(target.phase))
+            } else {
+                core.control.advancePhase(target.sessionId)
+            }
             core.refresh()
+        }
+    }
+
+    /**
+     * Set a phase on whichever backend governs the session. A refusal throws: a phase
+     * change that silently did not happen leaves the operator believing writes are denied
+     * (or allowed) when they are not.
+     */
+    private fun setSessionPhase(sessionId: String, phase: Phase) {
+        if (core.governor(sessionId) == Governor.Mod) {
+            val answer = core.sendToMod(sessionId, ModEntry.SetPhase(phase))
+            if (!answer.ok) throw IllegalStateException("The Claude Code session did not change phase: ${answer.message}")
+        } else {
+            core.control.setPhase(sessionId, phase)
         }
     }
 
@@ -349,3 +369,6 @@ object SessionOps {
         NotificationGroupManager.getInstance().getNotificationGroup("MoonlightCode").createNotification(message, type).notify(project)
     }
 }
+
+/** The phase after `phase`, as the daemon advances it: Commit goes back to Plan. */
+internal fun nextPhase(phase: Phase): Phase = Phase.ORDERED[(Phase.ORDERED.indexOf(phase) + 1) % Phase.ORDERED.size]

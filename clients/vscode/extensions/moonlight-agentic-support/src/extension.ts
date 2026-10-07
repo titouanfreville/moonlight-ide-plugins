@@ -141,7 +141,7 @@ async function announce(core: MoonlightApi, hold: HeldApproval): Promise<void> {
     // operator never ruled on. The hold stays; `moonlight.gate.answerHold` reopens it.
     return;
   }
-  await applyActionVerdict(hold, choice === 'Allow');
+  await applyActionVerdict(core, hold, choice === 'Allow');
 }
 
 /** Answer whichever hold is outstanding, on demand rather than on notification. */
@@ -176,7 +176,7 @@ async function answerSomeHold(core: MoonlightApi): Promise<void> {
   if (choice === undefined) {
     return;
   }
-  await applyActionVerdict(picked, choice === 'Allow');
+  await applyActionVerdict(core, picked, choice === 'Allow');
 }
 
 async function pickHold(holds: readonly HeldApproval[]): Promise<HeldApproval | undefined> {
@@ -196,7 +196,7 @@ async function pickHold(holds: readonly HeldApproval[]): Promise<HeldApproval | 
  * deny message — it is the only thing the session learns from being refused, so a
  * silent "no" leaves it to guess what it did wrong and try something similar.
  */
-async function applyActionVerdict(hold: HeldApproval, allow: boolean): Promise<void> {
+async function applyActionVerdict(core: MoonlightApi, hold: HeldApproval, allow: boolean): Promise<void> {
   let reason = 'Refused by the operator.';
   if (!allow) {
     const typed = await vscode.window.showInputBox({
@@ -208,7 +208,7 @@ async function applyActionVerdict(hold: HeldApproval, allow: boolean): Promise<v
     }
     reason = typed.trim().length > 0 ? typed.trim() : reason;
   }
-  const outcome = await decideAction(hold.sessionId, allow, reason);
+  const outcome = await decideAction(core, hold.sessionId, allow, reason);
   if (outcome.ok) {
     void vscode.window.showInformationMessage(`MoonlightCode: ${outcome.summary}`);
   } else {

@@ -1,0 +1,15 @@
+{
+  "name": "moonlight",
+  "owner": { "name": "Titouan Freville", "url": "https://github.com/titouanfreville" },
+  "metadata": {
+    "description": "MoonlightCode for Claude Code: the workflow gate as a Claude Code plugin, for machines where the MoonlightCode daemon does not run."
+  },
+  "plugins": [
+    {
+      "name": "moonlightcode",
+      "source": "./clients/claude-code/moonlight",
+      "description": "MoonlightCode workflow phases, Plan and Review panels inside Claude Code. Stands by while the MoonlightCode daemon governs.",
+      "category": "productivity"
+    }
+  ]
+}

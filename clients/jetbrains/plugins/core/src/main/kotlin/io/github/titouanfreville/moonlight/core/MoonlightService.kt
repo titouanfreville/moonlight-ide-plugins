@@ -1,5 +1,7 @@
 package io.github.titouanfreville.moonlight.core
 
+import com.intellij.ide.util.PropertiesComponent
+import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
@@ -8,6 +10,9 @@ import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.IdeFocusManager
@@ -21,9 +26,13 @@ import io.github.titouanfreville.moonlight.client.EngineEvent
 import io.github.titouanfreville.moonlight.client.EventStream
 import io.github.titouanfreville.moonlight.client.EventStreamHandlers
 import io.github.titouanfreville.moonlight.client.HookStatusEntry
+import io.github.titouanfreville.moonlight.client.Os
 import io.github.titouanfreville.moonlight.client.SessionStatus
 import io.github.titouanfreville.moonlight.client.UsageResponse
 import io.github.titouanfreville.moonlight.client.daemonBinaryName
+import io.github.titouanfreville.moonlight.client.stateAnchor
+import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ScheduledFuture
@@ -45,6 +54,13 @@ class MoonlightService : MoonlightApi, Disposable {
     private val launcher = DaemonLauncher()
     private val gate = GateState()
 
+    // The daemon's sessions, and the Claude Code mod's (see ModBridge); `sessions` is
+    // both, which is all a panel needs to know.
+    @Volatile private var daemonSessions: List<DiscoverableSession> = emptyList()
+    @Volatile private var modStates: List<ModState> = emptyList()
+    /** When each mod hold was first seen, so "waiting 40s" means what it says. */
+    private val modHoldSince = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+    private var modPoll: ScheduledFuture<*>? = null
     @Volatile private var sessions: List<DiscoverableSession> = emptyList()
     @Volatile private var gating: List<HookStatusEntry> = emptyList()
     @Volatile private var usage: UsageResponse? = null
@@ -66,12 +82,25 @@ class MoonlightService : MoonlightApi, Disposable {
      */
     @Volatile private var retryInstallAfter = 0L
 
+    // The fallback: the MoonlightCode mod for Claude Code (see ClaudeMod). It is asked
+    // about only while the daemon is down: spawning the CLI on every IDE start, for a
+    // state that matters only then, would be paid for nothing.
+    @Volatile private var claudeMod = ClaudeModState.Unknown
+    @Volatile private var failedPolls = 0
+    @Volatile private var modOffered = false
+    @Volatile private var installingMod = false
+    private val claudeSettings = ClaudeMod.settingsFileAt(ClaudeMod.settingsPath())
+
     /** Start polling and streaming. Idempotent; called from every project's startup. */
     @Synchronized
     fun start() {
         if (poll != null) return
         poll = AppExecutorUtil.getAppScheduledExecutorService()
             .scheduleWithFixedDelay({ refreshBlocking() }, 0, POLL_INTERVAL_MS, TimeUnit.MILLISECONDS)
+        // The mod's sessions, on the mod's own two-second tick, whether or not a daemon
+        // answers: the mod governs exactly when the daemon does not.
+        modPoll = AppExecutorUtil.getAppScheduledExecutorService()
+            .scheduleWithFixedDelay({ refreshMod() }, 0, MOD_POLL_MS, TimeUnit.MILLISECONDS)
         // The gate rides the event stream rather than the poll: a hold is not a fact that
         // can wait five seconds for its turn — the session is stopped until someone answers.
         stream = EventStream(object : EventStreamHandlers {
@@ -89,6 +118,8 @@ class MoonlightService : MoonlightApi, Disposable {
         synchronized(this) {
             poll?.cancel(false)
             poll = null
+            modPoll?.cancel(false)
+            modPoll = null
             stream?.close()
             stream = null
         }
@@ -98,6 +129,7 @@ class MoonlightService : MoonlightApi, Disposable {
     override fun gating(): List<HookStatusEntry> = gating
     override fun usage(): UsageResponse? = usage
     override fun backendError(): String? = backendError
+    override fun claudeMod(): ClaudeModState = claudeMod
 
     override fun refresh(): CompletableFuture<Unit> =
         CompletableFuture.supplyAsync({ refreshBlocking() }, AppExecutorUtil.getAppExecutorService())
@@ -120,11 +152,13 @@ class MoonlightService : MoonlightApi, Disposable {
                 }
                 // Only fire when something moved: this ticks every five seconds, and waking
                 // every surface each time would make them redraw for nothing.
-                val same = backendError == null && nextSessions == sessions && nextGating == gating && nextUsage == usage
-                sessions = nextSessions
+                val same = backendError == null && nextSessions == daemonSessions && nextGating == gating && nextUsage == usage
+                daemonSessions = nextSessions
+                sessions = mergedSessions()
                 gating = nextGating
                 usage = nextUsage
                 backendError = null
+                failedPolls = 0
                 launcher.reachable()
                 if (!same) fireSessions()
             } catch (e: Exception) {
@@ -135,8 +169,121 @@ class MoonlightService : MoonlightApi, Disposable {
                     backendError = reported
                     fireSessions()
                 }
+                // The first failure of a streak learns whether the mod covers for the
+                // daemon; a streak long enough that autostart could not fix it offers it.
+                failedPolls += 1
+                if (failedPolls == 1) {
+                    AppExecutorUtil.getAppExecutorService().execute { checkMod() }
+                } else if (failedPolls == OFFER_MOD_AFTER_FAILURES) {
+                    AppExecutorUtil.getAppExecutorService().execute { offerMod() }
+                }
             }
         }
+    }
+
+    private fun checkMod() {
+        val next = runCatching { ClaudeMod.readState(::runClaude, claudeSettings) }.getOrDefault(ClaudeModState.Unknown)
+        if (next != claudeMod) {
+            claudeMod = next
+            fireSessions()
+        }
+    }
+
+    /** Offered once per IDE run, after the daemon stayed down long enough for autostart to have had its go. */
+    private fun offerMod() {
+        if (modOffered || PropertiesComponent.getInstance().getBoolean(MOD_DONT_ASK_KEY)) return
+        checkMod()
+        if (claudeMod != ClaudeModState.Missing && claudeMod != ClaudeModState.Off) return
+        modOffered = true
+        NotificationGroupManager.getInstance().getNotificationGroup("MoonlightCode Sessions")
+            .createNotification(
+                "No MoonlightCode daemon is running, so Claude Code sessions are not gated. Install the MoonlightCode " +
+                    "plugin for Claude Code? It gates each session itself until a daemon runs. This installs " +
+                    "\"moonlightcode\" from the moonlight marketplace and turns on function hooks in ~/.claude/settings.json.",
+                NotificationType.WARNING,
+            )
+            .addAction(NotificationAction.createSimpleExpiring("Install") { installClaudeMod(null) })
+            .addAction(NotificationAction.createSimpleExpiring("Not now") {})
+            .addAction(NotificationAction.createSimpleExpiring("Don't ask again") {
+                PropertiesComponent.getInstance().setValue(MOD_DONT_ASK_KEY, true)
+            })
+            .notify(null)
+    }
+
+    override fun installClaudeMod(project: Project?) {
+        if (installingMod) return
+        installingMod = true
+        ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Installing the MoonlightCode plugin for Claude Code", false) {
+            override fun run(indicator: ProgressIndicator) {
+                try {
+                    val result = ClaudeMod.install(::runClaude, claudeSettings, bundledMarketplace())
+                    checkMod()
+                    when (result) {
+                        is ModInstall.Installed -> notify(
+                            "MoonlightCode plugin installed for Claude Code. New Claude Code sessions are gated by it while " +
+                                "no daemon runs; restart the sessions already open to gate them too.",
+                            NotificationType.INFORMATION,
+                            project,
+                        )
+                        is ModInstall.Failed -> notify("MoonlightCode plugin not installed: ${result.error}", NotificationType.ERROR, project)
+                    }
+                } catch (e: Exception) {
+                    notify("MoonlightCode plugin not installed: ${e.message ?: e}", NotificationType.ERROR, project)
+                } finally {
+                    installingMod = false
+                }
+            }
+        })
+    }
+
+    /**
+     * The marketplace bundled in this plugin's jar, written out to the IDE's system
+     * directory: Claude Code keeps the path a local marketplace was added from, so it must
+     * outlive this plugin's own (versioned) folder. `files.txt` lists what the build copied.
+     */
+    private fun bundledMarketplace(): Path? = try {
+        val index = javaClass.getResourceAsStream("$BUNDLED_MOD/files.txt")?.use { String(it.readAllBytes()) }
+        if (index == null) {
+            null
+        } else {
+            val target = daemonStorage().resolve("claude-mod")
+            target.toFile().deleteRecursively()
+            for (relative in index.lines().map(String::trim).filter(String::isNotEmpty)) {
+                // The index is this build's own; a path that climbs out of it is refused all the same.
+                val out = target.resolve(relative).normalize()
+                if (!out.startsWith(target)) throw IOException("bundled mod path escapes its folder: $relative")
+                val bytes = javaClass.getResourceAsStream("$BUNDLED_MOD/$relative")?.use { it.readAllBytes() }
+                    ?: throw IOException("bundled mod file missing: $relative")
+                Files.createDirectories(out.parent)
+                Files.write(out, bytes)
+            }
+            target
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * Runs the `claude` CLI. Through a login shell on macOS and Linux, as the terminal
+     * launch does, because an IDE started from the dock lacks the PATH that finds
+     * `claude`. The arguments travel as the shell's positional parameters, never inside
+     * the script.
+     */
+    private fun runClaude(args: List<String>): CliResult {
+        val command = if (Os.current() == Os.Windows) {
+            listOf("cmd", "/c", "claude") + args
+        } else {
+            val shell = System.getenv("SHELL")?.takeIf { it.isNotBlank() } ?: "/bin/sh"
+            listOf(shell, "-l", "-c", "exec claude \"\$@\"", "claude") + args
+        }
+        val process = ProcessBuilder(command).start()
+        val stdout = CompletableFuture.supplyAsync { process.inputStream.use { String(it.readAllBytes()) } }
+        val stderr = CompletableFuture.supplyAsync { process.errorStream.use { String(it.readAllBytes()) } }
+        if (!process.waitFor(CLI_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            throw IOException("claude ${args.joinToString(" ")} timed out")
+        }
+        return CliResult(process.exitValue(), stdout.get(), stderr.get())
     }
 
     /**
@@ -203,9 +350,55 @@ class MoonlightService : MoonlightApi, Disposable {
         }
     }
 
-    override fun heldApproval(sessionId: String): HeldApproval? = gate.approval(sessionId)
-    override fun heldApprovals(): List<HeldApproval> = gate.approvals()
-    override fun proposedPlan(sessionId: String): String? = gate.plan(sessionId)
+    override fun heldApproval(sessionId: String): HeldApproval? = modHoldOf(sessionId) ?: gate.approval(sessionId)
+    override fun heldApprovals(): List<HeldApproval> {
+        val mine = modStates.map { it.sessionId }.toSet()
+        return (gate.approvals().filter { it.sessionId !in mine } + modStates.mapNotNull { modHoldOf(it.sessionId) })
+            .sortedBy { it.sinceMs }
+    }
+    override fun proposedPlan(sessionId: String): String? =
+        modStates.firstOrNull { it.sessionId == sessionId }?.plan?.markdown ?: gate.plan(sessionId)
+
+    override fun modReview(sessionId: String): ModReview? = modStates.firstOrNull { it.sessionId == sessionId }?.review
+
+    override fun governor(sessionId: String): Governor =
+        if (modStates.any { it.sessionId == sessionId }) Governor.Mod else Governor.Daemon
+
+    override fun sendToMod(sessionId: String, entry: ModEntry): ModAnswer =
+        try {
+            ModBridge.send(modDir(), sessionId, entry).also { refreshMod() }
+        } catch (e: Exception) {
+            ModAnswer(false, e.message ?: e.toString())
+        }
+
+    private fun modDir(): Path = Path.of(stateAnchor(), ".moonlight", "mod", "sessions")
+
+    private fun mergedSessions(): List<DiscoverableSession> {
+        val mine = modStates.map { it.sessionId }.toSet()
+        return daemonSessions.filter { it.sessionId !in mine } + modStates.map(ModBridge::session)
+    }
+
+    private fun modHoldOf(sessionId: String): HeldApproval? {
+        val state = modStates.firstOrNull { it.sessionId == sessionId } ?: return null
+        return ModBridge.hold(state, modHoldSince[sessionId]?.second ?: System.currentTimeMillis())
+    }
+
+    @Synchronized
+    private fun refreshMod() {
+        val next = ModBridge.readStates(modDir(), System.currentTimeMillis())
+        if (next == modStates) return
+        modStates = next
+        val now = System.currentTimeMillis()
+        for (state in next) {
+            val hold = ModBridge.hold(state, now)
+            val key = hold?.let { "${it.what}#${it.planVersion ?: ""}" }
+            if (key == null) modHoldSince.remove(state.sessionId)
+            else if (modHoldSince[state.sessionId]?.first != key) modHoldSince[state.sessionId] = key to now
+        }
+        sessions = mergedSessions()
+        fireSessions()
+        fireHolds()
+    }
 
     override fun activeSession(project: Project): ActiveSession? {
         val known = sessions
@@ -287,7 +480,17 @@ class MoonlightService : MoonlightApi, Disposable {
         /** How often the backend is polled — one loop for every plugin and every window. */
         const val POLL_INTERVAL_MS: Long = 5000
 
+        /** The mod's own tick: its state can change no faster. */
+        private const val MOD_POLL_MS: Long = 2000
+
         private const val INSTALL_RETRY_MS: Long = 10 * 60_000
+
+        /** How many failed polls in a row (five seconds apart) before the mod is offered. */
+        private const val OFFER_MOD_AFTER_FAILURES = 3
+        private const val MOD_DONT_ASK_KEY = "moonlight.claudeMod.dontAsk"
+        private const val CLI_TIMEOUT_SECONDS = 120L
+        /** Where the build puts the mod in this plugin's resources (see build.gradle.kts). */
+        private const val BUNDLED_MOD = "/moonlight/claude-mod"
 
         fun getInstance(): MoonlightService = ApplicationManager.getApplication().service()
 

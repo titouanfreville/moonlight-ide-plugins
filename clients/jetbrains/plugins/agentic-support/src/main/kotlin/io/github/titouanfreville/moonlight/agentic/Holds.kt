@@ -10,8 +10,10 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
+import com.intellij.openapi.components.serviceOrNull
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
@@ -27,6 +29,8 @@ import io.github.titouanfreville.moonlight.core.MoonlightApi
 import io.github.titouanfreville.moonlight.core.MoonlightDataKeys
 import io.github.titouanfreville.moonlight.core.MoonlightListener
 import io.github.titouanfreville.moonlight.core.MoonlightService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Held approvals: telling the operator a session is blocked, and taking their answer — the
@@ -81,7 +85,7 @@ object Holds {
             reason = typed.trim().ifEmpty { reason }
         }
         ApplicationManager.getApplication().executeOnPooledThread {
-            when (val outcome = decideAction(core.control, hold.sessionId, allow, reason)) {
+            when (val outcome = decideAction(core, hold.sessionId, allow, reason)) {
                 is GateOutcome.Ok -> info(project, outcome.summary)
                 is GateOutcome.Failed -> error(project, "The verdict did not reach the session (${outcome.error}). It is still waiting.")
             }
@@ -201,7 +205,10 @@ class HoldAnnouncer(private val project: Project) : Disposable {
 
 class AgenticStartup : ProjectActivity {
     override suspend fun execute(project: Project) {
-        ApplicationManager.getApplication().invokeLater({ project.service<HoldAnnouncer>().start() }, project.disposed)
+        // See ReviewStartup: cancelled with the plugin on a dynamic unload, unlike invokeLater.
+        withContext(Dispatchers.EDT) {
+            if (!project.isDisposed) project.serviceOrNull<HoldAnnouncer>()?.start()
+        }
     }
 }
 

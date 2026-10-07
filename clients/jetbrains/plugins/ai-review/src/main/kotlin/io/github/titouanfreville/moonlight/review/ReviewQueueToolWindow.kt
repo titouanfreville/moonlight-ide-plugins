@@ -179,7 +179,7 @@ private class QueuePanel(private val project: Project, private val toolWindow: T
         ApplicationManager.getApplication().executeOnPooledThread {
             // Without diffs: the list needs file names, and the fleet's diffs together run to
             // megabytes. The selected file's diff is fetched on its own.
-            val result = runCatching { core.control.reviewQueue(diffs = false) }
+            val result = runCatching { ReviewSource.reviewQueue(diffs = false) }
             ApplicationManager.getApplication().invokeLater({
                 loading.set(false)
                 result.onSuccess {
@@ -283,7 +283,7 @@ private class QueuePanel(private val project: Project, private val toolWindow: T
         preview.text = "Loading the diff…"
         ApplicationManager.getApplication().executeOnPooledThread {
             val text = runCatching {
-                val full = core.control.reviewQueue(item.sessionId, item.filePath, diffs = true).firstOrNull()
+                val full = ReviewSource.reviewQueue(item.sessionId, item.filePath, diffs = true).firstOrNull()
                 when {
                     full == null -> "This file has left the queue."
                     full.diffOmitted -> "The diff is too large to preview here. Double-click the file to open it in the diff view."

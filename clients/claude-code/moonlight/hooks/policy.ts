@@ -78,6 +78,16 @@ export const sandboxListsFor = (
   return { denyWrite: [...always, ...entries.filter(e => !always.includes(e))], allowWrite: [] }
 }
 
+// Everything a phase could have added for this root: what counts as the mod's
+// own when there is no record of what it added last.
+export const ownedByAnyPhase = (writable: readonly string[], rootEntries: readonly string[]): SandboxWriteLists => {
+  const lists = PHASES.map(phase => sandboxListsFor(phase, writable, rootEntries))
+  return {
+    denyWrite: [...new Set(lists.flatMap(l => l.denyWrite))],
+    allowWrite: [...new Set(lists.flatMap(l => l.allowWrite))],
+  }
+}
+
 // Top-level entries that appeared since the deny list was built.
 export const newRootEntries = (
   rootEntries: readonly string[],

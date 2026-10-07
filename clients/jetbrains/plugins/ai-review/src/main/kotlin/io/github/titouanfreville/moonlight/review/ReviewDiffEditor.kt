@@ -187,7 +187,7 @@ internal class ReviewDiffEditor(private val project: Project, private val file: 
         shown = f.path
         ApplicationManager.getApplication().executeOnPooledThread {
             val baseline = try {
-                MoonlightApi.getInstance().control.baseline(file.sessionId, f.path)
+                ReviewSource.baseline(file.sessionId, f.path)
             } catch (e: Exception) {
                 BaselineView.Unavailable(e.message ?: "unreachable")
             }

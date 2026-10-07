@@ -21,6 +21,8 @@
 
     <extensions defaultExtensionNs="io.github.titouanfreville.moonlight.core">
         <toolWindowTab id="review" implementation="io.github.titouanfreville.moonlight.review.ReviewTab" order="after sessions"/>
+        <!-- Findings of an AI review skill, for sessions the Claude Code plugin governs. -->
+        <toolWindowTab id="aiReview" implementation="io.github.titouanfreville.moonlight.review.AiReviewTab" order="after review"/>
     </extensions>
 
     <extensions defaultExtensionNs="com.intellij">
@@ -58,6 +60,11 @@
                 class="io.github.titouanfreville.moonlight.review.RefreshReviewAction"
                 text="MoonlightCode: Refresh Review"
                 icon="AllIcons.Actions.Refresh"/>
+        <action id="Moonlight.Review.OpenAiReview"
+                class="io.github.titouanfreville.moonlight.review.OpenAiReviewAction"
+                text="MoonlightCode: Open AI Review"
+                description="Run a review skill in a session the MoonlightCode plugin for Claude Code governs, then triage its findings"
+                icon="AllIcons.Actions.IntentionBulb"/>
         <action id="Moonlight.Review.ToggleResolved"
                 class="io.github.titouanfreville.moonlight.review.ToggleResolvedAction"
                 text="Show Resolved Threads"
@@ -106,6 +113,7 @@
             <reference ref="Moonlight.Review.Refresh"/>
             <reference ref="Moonlight.Review.OpenSession"/>
             <reference ref="Moonlight.Review.Submit"/>
+            <reference ref="Moonlight.Review.OpenAiReview"/>
             <reference ref="Moonlight.Review.Reopen"/>
             <reference ref="Moonlight.Review.ToggleResolved"/>
             <separator/>
@@ -117,6 +125,7 @@
 
         <group id="Moonlight.Review.DiffToolbar">
             <reference ref="Moonlight.Review.Submit"/>
+            <reference ref="Moonlight.Review.OpenAiReview"/>
             <reference ref="Moonlight.Review.ToggleResolved"/>
             <separator/>
             <reference ref="Moonlight.Review.MarkReviewed"/>

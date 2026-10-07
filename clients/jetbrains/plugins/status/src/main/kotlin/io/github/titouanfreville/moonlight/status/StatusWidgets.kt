@@ -14,6 +14,7 @@ import com.intellij.openapi.wm.StatusBarWidgetFactory
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
+import io.github.titouanfreville.moonlight.core.Governor
 import io.github.titouanfreville.moonlight.core.MoonlightApi
 import io.github.titouanfreville.moonlight.core.MoonlightListener
 import io.github.titouanfreville.moonlight.core.MoonlightService
@@ -90,6 +91,8 @@ private class GatingWidget(project: Project) : MoonlightWidget(project) {
             core.activeSession(project),
             core.activePanelKey(project),
             projectFolders(project),
+            core.claudeMod(),
+            core.activeSession(project)?.let { core.governor(it.sessionId) == Governor.Mod } == true,
         )
         action = view.action
         draw(iconFor(view.icon), view.text, view.warn, view.tooltip)

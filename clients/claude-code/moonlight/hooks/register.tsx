@@ -51,6 +51,8 @@ import {
   type PlanLine,
   type PlanVerdict,
 } from './plan'
+import { answer, BRIDGE_VERSION, type InboxEntry, parseInboxEntry, pendingEntries, type ReviewEntry } from './bridge'
+import { controlUrl, countMisses, discoveryFile, type Governor, hooksInstalled, isHealthy, nextGovernor } from './daemon'
 import {
   allowWriteBreach,
   checkSandbox,
@@ -69,6 +71,7 @@ import {
   phaseRule,
   isUnderAny,
   mergeOwned,
+  ownedByAnyPhase,
   newRootEntries,
   parsePhase,
   PROJECT_CONFIG_DIR,
@@ -128,6 +131,11 @@ let scratchRoots: string[] = []
 let home: string | undefined
 let projectDir: string | undefined
 let modRoot: string | undefined
+// Who governs this session: the daemon (the mod stands by) or the mod. Unset
+// until session.start decides; the gate hooks govern unless it is 'daemon'.
+let governor: Governor | undefined
+let probing = false
+let missedProbes = 0
 let protectedRoots: string[] = []
 
 // What the band and the dialog draw from: written on change, read while drawing.
@@ -141,6 +149,7 @@ const PHASE_STYLE: Record<Phase, { badge: string; color: string }> = {
   review: { badge: ' ● REVIEW ', color: 'blue' },
   commit: { badge: ' ■ COMMIT ', color: 'red' },
 }
+const governorState = atom({ plugin: 'moonlightcode', key: 'governor' } as const, null as Governor | null)
 const pendingState = atom({ plugin: 'moonlightcode', key: 'pending' } as const, null)
 
 let pending: MoonlightcodePhaseRequest | undefined
@@ -148,6 +157,7 @@ let pending: MoonlightcodePhaseRequest | undefined
 const setPending = async ($: $, request: MoonlightcodePhaseRequest | undefined): Promise<void> => {
   pending = request
   await update($, pendingState, () => request ?? null)
+  void publishState($).catch(() => undefined)
 }
 
 // ---- Paths ----
@@ -219,9 +229,16 @@ const readPhase = async ($: $): Promise<Phase> =>
 
 const settingsPath = (projectRoot: string): string => `${projectRoot}/.claude/settings.local.json`
 
-const applySandbox = async ($: $, phase: Phase): Promise<void> => {
-  if (root === undefined) return
-  const path = settingsPath(root)
+// Per project: the store is the plugin's, shared by every session on the
+// machine, and one key for all let another project's lists stand for this
+// one's (its own stale entries then stayed, read as the user's).
+const ownedKey = (projectRoot: string): string => `${OWNED_KEY}:${projectKey(projectRoot)}`
+
+// Puts the mod's lists for this project in its settings, replacing what the mod
+// added last time and keeping the user's own entries. With no record for the
+// project, whatever a phase would have added here counts as the mod's.
+const writeSandboxLists = async ($: $, projectRoot: string, owned: (entries: string[]) => SandboxWriteLists): Promise<SandboxWriteLists> => {
+  const path = settingsPath(projectRoot)
   const text = await $.fs.read(path).catch(() => '{}')
   const parsed = parseSettings(text)
   if ('error' in parsed) {
@@ -234,14 +251,21 @@ const applySandbox = async ($: $, phase: Phase): Promise<void> => {
   sandbox.enabled = true
   sandbox.allowUnsandboxedCommands = false
   const filesystem = (sandbox.filesystem ??= {})
+  const entries = await listRoot($, projectRoot)
+  const recorded = (await $.store.get(ownedKey(projectRoot))) as SandboxWriteLists | undefined
+  const previous = recorded ?? ownedByAnyPhase(DEFAULT_WRITABLE, entries)
+  const lists = owned(entries)
+  filesystem.denyWrite = mergeOwned(filesystem.denyWrite ?? [], previous.denyWrite, lists.denyWrite)
+  filesystem.allowWrite = mergeOwned(filesystem.allowWrite ?? [], previous.allowWrite, lists.allowWrite)
+  const next = `${JSON.stringify(settings, null, 2)}\n`
+  if (next !== text) await $.fs.write(path, next)
+  await $.store.set(ownedKey(projectRoot), lists)
+  return lists
+}
 
-  const previous = ((await $.store.get(OWNED_KEY)) ?? { denyWrite: [], allowWrite: [] }) as SandboxWriteLists
-  const owned = sandboxListsFor(phase, DEFAULT_WRITABLE, await listRoot($, root))
-  filesystem.denyWrite = mergeOwned(filesystem.denyWrite ?? [], previous.denyWrite, owned.denyWrite)
-  filesystem.allowWrite = mergeOwned(filesystem.allowWrite ?? [], previous.allowWrite, owned.allowWrite)
-
-  await $.fs.write(path, `${JSON.stringify(settings, null, 2)}\n`)
-  await $.store.set(OWNED_KEY, owned)
+const applySandbox = async ($: $, phase: Phase): Promise<void> => {
+  if (root === undefined) return
+  const owned = await writeSandboxLists($, root, entries => sandboxListsFor(phase, DEFAULT_WRITABLE, entries))
   deniedEntries = owned.denyWrite
   appliedPhase = phase
   await update($, phaseState, () => phase)
@@ -265,7 +289,8 @@ const setPhase = async ($: $, to: Phase): Promise<Phase> => {
   return syncPhase($)
 }
 
-const initGate = async ($: $): Promise<void> => {
+// Where things are, for the gate and the Review panel alike.
+const initPaths = async ($: $): Promise<void> => {
   // The project root, not the cwd: a shell `cd` moves the cwd, not the root.
   root = await realPathOf($, await $.session.root())
   home = await $.env.get('HOME')
@@ -281,7 +306,103 @@ const initGate = async ($: $): Promise<void> => {
     protectedRoots.push(`${root}/${PROJECT_CONFIG_DIR}`, ...PROJECT_SETTINGS.map(file => `${root}/${file}`))
     noteRoots = await resolveNoteRoots($, root)
     scratchRoots = await resolveScratchRoots($)
-    await syncPhase($)
+  }
+}
+
+const initGate = async ($: $): Promise<void> => {
+  await initPaths($)
+  if (root !== undefined) await syncPhase($)
+}
+
+// ---- Daemon hand-over ----
+
+const PROBE_TIMEOUT_MS = 3000
+
+// Whether the MoonlightCode daemon governs Claude Code right now: it answers
+// on loopback and reports its hooks installed. Any doubt reads as no, so the
+// mod keeps the gate.
+// `watch`: the daemon is known to govern, so its health is enough (cheap); at
+// session start, its hooks must be installed too.
+const daemonGoverns = async ($: $, watch = false): Promise<boolean> => {
+  const file = discoveryFile(await $.env.get('HOME'), await $.env.get('MOONLIGHT_HOME'))
+  if (file === undefined || !(await $.fs.exists(file))) return false
+  const url = controlUrl(await $.fs.read(file))
+  if (url === undefined) return false
+  const answer = $.http
+    .fetch(`${url}/control/${watch ? 'health' : 'gating-status'}`)
+    .then(response => response.ok && (watch ? isHealthy(response.text) : hooksInstalled(response.text)))
+    .catch(() => false)
+  const late = $.clock.sleep(PROBE_TIMEOUT_MS).then(() => false)
+  return Promise.race([answer, late])
+}
+
+// Whether another session on this project is governed by the mod right now:
+// its state is published (only a governing mod publishes) and its heartbeat fresh.
+const projectGovernedElsewhere = async ($: $): Promise<boolean> => {
+  const sessions = await sessionsDir($)
+  if (sessions === undefined || root === undefined || !(await $.fs.exists(sessions))) return false
+  const me = await $.session.id()
+  const now = await $.clock.now()
+  for (const entry of await $.fs.list(sessions)) {
+    if (entry.kind !== 'dir' || entry.name === me) continue
+    try {
+      const lastBeat = await $.fs.stat(`${sessions}/${entry.name}/heartbeat`)
+      if (now - lastBeat.mtimeMs > HEARTBEAT_FRESH_MS) continue
+      const state = JSON.parse(await $.fs.read(`${sessions}/${entry.name}/state.json`)) as { root?: unknown }
+      if (state.root === root) return true
+    } catch {
+      // No heartbeat or no state: not a session the mod governs.
+    }
+  }
+  return false
+}
+
+// The backstop's own limit (hooks/backstop.sh): a fresher beat is a live mod.
+const HEARTBEAT_FRESH_MS = 10_000
+
+// While the daemon governs, the mod's own deny entries come out of the project's
+// sandbox (the gate's own files stay denied): leftovers from an earlier phase
+// would block the session the daemon governs.
+const releaseSandbox = async ($: $): Promise<void> => {
+  if (root === undefined) return
+  await writeSandboxLists($, root, entries => sandboxListsFor('auto', DEFAULT_WRITABLE, entries))
+}
+
+const setGovernor = async ($: $, to: Governor): Promise<void> => {
+  governor = to
+  await update($, governorState, () => to)
+}
+
+// While the daemon governs, the mod checks on it each tick, and takes the
+// session over once it has stopped (TAKEOVER_AFTER_MISSES probes in a row), in Plan: the stored phase is not trusted, since
+// the mod's sandbox did not guard it while the daemon governed. The operator
+// and the agent are told.
+const watchDaemon = async ($: $): Promise<void> => {
+  if (governor !== 'daemon' || probing) return
+  probing = true
+  try {
+    const governs = await daemonGoverns($, true).catch(() => false)
+    missedProbes = countMisses(missedProbes, governs)
+    if (nextGovernor(governor, governs, missedProbes) === 'daemon') return
+    await setGovernor($, 'mod')
+    await tryStart($, 'the gate', async () => {
+      await initPaths($)
+      // The phase is the project's: another live session the mod governs here
+      // has kept it guarded, so it stands; otherwise it is not trusted.
+      if (await projectGovernedElsewhere($)) await syncPhase($)
+      else await setPhase($, 'plan')
+    })
+    await startGoverned($)
+    const phase = await read($, phaseState)
+    $.ui.toast(`Moonlight: the daemon stopped governing; this session is now gated by the mod (${phaseLabel(phase)})`)
+    await tellModel(
+      $,
+      `[moonlight] The MoonlightCode daemon stopped answering: this session is now governed by the moonlightcode mod, ` +
+        `in the ${phaseLabel(phase)} phase (${phaseRule(phase)}). Use mcp__moonlightcode__request_phase and ` +
+        'mcp__moonlightcode__present_plan from now on, not the mcp__moonlight__ verbs.',
+    )
+  } finally {
+    probing = false
   }
 }
 
@@ -312,6 +433,9 @@ const guardSelf = async ($: $, path: string, target: string | undefined): Promis
 }
 
 const guardWrite = async ($: $, path: string): Promise<{ deny: string } | undefined> => {
+  // The daemon's own hooks gate this session; the mod still keeps its own files
+  // out of the file tools' reach, since a takeover reads them.
+  if (governor === 'daemon') return guardSelf($, path, await resolveTarget($, path))
   const phase = await syncPhase($)
   const target = await resolveTarget($, path)
   const self = await guardSelf($, path, target)
@@ -383,8 +507,194 @@ const beat = async ($: $): Promise<void> => {
 }
 
 const tick = async ($: $): Promise<void> => {
-  await syncPhase($)
+  if (governor === 'daemon') await watchDaemon($)
+  else await syncPhase($)
   await beat($)
+  if (governor === 'mod') {
+    await applyInbox($)
+    await refreshReview($)
+    await publishState($)
+  }
+}
+
+// The review the IDE shows: recomputed when a baseline was taken or a decision
+// applied, and every REVIEW_REFRESH_TICKS ticks for what changed otherwise
+// (a shell command, an edit outside the session). git runs only then.
+const REVIEW_REFRESH_TICKS = 5
+let reviewDirty = true
+let reviewTicks = 0
+let bridgeSkills: string[] = []
+
+const refreshReview = async ($: $): Promise<void> => {
+  reviewTicks += 1
+  if (!reviewDirty && reviewTicks % REVIEW_REFRESH_TICKS !== 0) return
+  reviewDirty = false
+  // A failed refresh keeps the last list: the phase and plan still publish.
+  await loadChangedFiles($).catch(() => undefined)
+  bridgeSkills = await runnableSkills($).then(r => r.runnable, () => bridgeSkills)
+}
+
+// ---- IDE bridge (bridge.ts) ----
+
+// The session's own folder, beside its heartbeat.
+const sessionFolder = async ($: $): Promise<{ dir: string; id: string } | undefined> => {
+  const sessions = await sessionsDir($)
+  const id = await $.session.id()
+  return sessions === undefined || !SESSION_ID.test(id) ? undefined : { dir: `${sessions}/${id}`, id }
+}
+
+let publishedState: string | undefined
+
+// What the IDE panels show, written while the mod governs and only when it
+// changed: the phase, the request waiting, the latest plan.
+const publishState = async ($: $): Promise<void> => {
+  if (governor !== 'mod') return
+  const at = await sessionFolder($)
+  if (at === undefined) return
+  const doc = await read($, planDocState)
+  const state = {
+    v: BRIDGE_VERSION,
+    sessionId: at.id,
+    root: root ?? null,
+    phase: await read($, phaseState),
+    pending: pending === undefined ? null : { to: pending.to, reason: pending.reason },
+    plan: doc === null ? null : doc,
+    review: await reviewForIde($),
+  }
+  const key = JSON.stringify(state)
+  if (key === publishedState) return
+  await $.fs.write(`${at.dir}/state.json`, `${JSON.stringify({ ...state, updatedMs: await $.clock.now() })}\n`)
+  publishedState = key
+}
+
+const reviewForIde = async ($: $) => {
+  const run = await read($, reviewRunState)
+  return {
+    scope: effectiveScope(await read($, reviewScopeState), await read($, reviewHasBaselinesState)),
+    files: (await read($, reviewFilesState)).map(f => ({
+      path: f.path,
+      absolute: `${f.repo}/${f.repoPath}`,
+      status: f.status,
+      added: f.added,
+      removed: f.removed,
+      ...(f.baseline !== undefined ? { baseline: f.baseline } : {}),
+      ...(f.skipped !== undefined ? { skipped: f.skipped } : {}),
+    })),
+    comments: await read($, reviewCommentsState),
+    findings: await read($, reviewFindingsState),
+    findingsStatus: await read($, reviewFindingsStatusState),
+    run: run === null ? null : { skill: run.skill },
+    skills: bridgeSkills,
+  }
+}
+
+// The operator's decisions from the IDE, oldest first, each answered in the
+// outbox; the IDE removes both files once it has read the answer.
+const applyInbox = async ($: $): Promise<void> => {
+  const at = await sessionFolder($)
+  if (at === undefined || !(await $.fs.exists(`${at.dir}/inbox`))) return
+  const names = async (dir: string) =>
+    (await $.fs.exists(dir)) ? (await $.fs.list(dir)).filter(e => e.kind === 'file').map(e => e.name) : []
+  const answered: { name: string; ok: boolean; message: string }[] = []
+  for (const name of pendingEntries(await names(`${at.dir}/inbox`), await names(`${at.dir}/outbox`))) {
+    try {
+      const entry = parseInboxEntry(await $.fs.read(`${at.dir}/inbox/${name}`))
+      answered.push({ name, ...('error' in entry ? { ok: false, message: entry.error } : await applyEntry($, entry)) })
+    } catch (error) {
+      answered.push({ name, ok: false, message: String(error) })
+    }
+  }
+  if (answered.length === 0) return
+  // The state first, the answers after: an IDE that reads its answer then the
+  // state must find the change it asked for already there.
+  reviewDirty = true
+  await refreshReview($)
+  await publishState($)
+  for (const a of answered) await $.fs.write(`${at.dir}/outbox/${a.name}`, answer(a.ok, a.message))
+}
+
+// One review decision, through the functions the Review panel calls.
+const applyReviewEntry = async ($: $, entry: ReviewEntry): Promise<{ ok: boolean; message: string }> => {
+  reviewDirty = true
+  switch (entry.kind) {
+    case 'review-comment': {
+      if (!(await read($, reviewFilesState)).some(f => f.path === entry.path))
+        return { ok: false, message: `${entry.path} is not among the files under review.` }
+      const id = `c${await $.clock.now()}`
+      const { kind: _kind, ...comment } = entry
+      await update($, reviewCommentsState, list => [...(list ?? []), { ...comment, id }])
+      return { ok: true, message: id }
+    }
+    case 'review-comment-edit': {
+      let found = false
+      await update($, reviewCommentsState, list =>
+        (list ?? []).map(c => (c.id === entry.id ? ((found = true), { ...c, body: entry.body }) : c)),
+      )
+      return found ? { ok: true, message: 'Comment updated.' } : { ok: false, message: 'No such comment: it was sent or removed.' }
+    }
+    case 'review-uncomment':
+      await removeReviewComment($, entry.id)
+      return { ok: true, message: 'Comment removed.' }
+    case 'review-submit': {
+      const message = await submitReview($, entry.summary)
+      return { ok: message.startsWith('Review submitted'), message }
+    }
+    case 'review-accept': {
+      const message = await acceptReview($)
+      return { ok: message.startsWith('Review accepted'), message }
+    }
+    case 'review-accept-file':
+      return acceptReviewFile($, entry.path)
+    case 'review-run': {
+      const { runnable } = await runnableSkills($)
+      if (!runnable.includes(entry.skill))
+        return { ok: false, message: `${entry.skill} is not a review skill this session can run (${runnable.join(', ') || 'none'}).` }
+      const message = await runReviewSkill($, entry.skill)
+      return { ok: (await read($, reviewRunState))?.skill === entry.skill, message }
+    }
+    case 'review-cancel':
+      await cancelAiReview($)
+      return { ok: true, message: 'AI review cancelled.' }
+    case 'review-scope':
+      await update($, reviewScopeState, () => entry.scope)
+      await loadChangedFiles($)
+      return { ok: true, message: `Review scope: ${entry.scope === 'session' ? 'changes made in this session' : 'changes since the last commit'}.` }
+    case 'finding': {
+      if (!(await read($, reviewFindingsState)).some(f => f.id === entry.id))
+        return { ok: false, message: 'No such finding: the review was sent or replaced.' }
+      await decideFinding($, entry.id, entry.decision)
+      if (entry.note !== undefined) await saveFindingNote($, entry.id, entry.note)
+      return { ok: true, message: 'Finding updated.' }
+    }
+  }
+}
+
+// One decision, through the functions the panes call.
+const applyEntry = async ($: $, entry: InboxEntry): Promise<{ ok: boolean; message: string }> => {
+  if (entry.kind !== 'phase' && entry.kind !== 'request' && entry.kind !== 'plan') return applyReviewEntry($, entry)
+  if (entry.kind === 'phase') {
+    const now = await operatorSetPhase($, entry.to)
+    $.ui.toast(`Moonlight: phase is now ${phaseLabel(now)} (set from the IDE)`)
+    return { ok: now === entry.to, message: `The phase is ${now}.` }
+  }
+  if (entry.kind === 'request') {
+    if (pending === undefined) return { ok: false, message: 'No phase request is waiting: it was answered already.' }
+    await decide($, entry.approve, entry.reason)
+    return { ok: true, message: entry.approve ? `The phase is ${await readPhase($)}.` : 'Denied: the agent was told.' }
+  }
+  const doc = await read($, planDocState)
+  if (doc === null || doc.version !== entry.version)
+    return { ok: false, message: `Plan v${entry.version} is not the current plan${doc !== null ? ` (v${doc.version} is)` : ''}.` }
+  if (doc.decided !== undefined) return { ok: false, message: `Plan v${doc.version} is already ${VERDICT_WORD[doc.decided]}.` }
+  const count = parsePlan(doc.markdown).length
+  const outside = entry.comments.find(c => c.start < 1 || c.end < c.start || c.end > count)
+  if (outside !== undefined) return { ok: false, message: `No such lines ${outside.start}-${outside.end}: the plan has ${count}.` }
+  for (const c of entry.comments) await addPlanComment($, c.start, c.end, c.body)
+  // A rejection's reason is its own text; any other note joins the panel's.
+  if (entry.verdict !== 'reject' && entry.note !== '')
+    await update($, planNoteState, current => [current.trim(), entry.note].filter(t => t !== '').join('\n\n'))
+  const message = await sendPlanVerdict($, entry.verdict, entry.verdict === 'reject' ? entry.note : undefined)
+  return { ok: (await read($, planDocState))?.decided === entry.verdict, message }
 }
 
 // ---- Phase control ----
@@ -399,16 +709,19 @@ const askModel = async ($: $, text: string): Promise<void> => {
   await $.prompt.submit({ text })
 }
 
-const decide = async ($: $, isApproved: boolean): Promise<void> => {
+// `reason`: why the operator denied it, when they said (the IDE asks).
+const decide = async ($: $, isApproved: boolean, reason?: string): Promise<void> => {
   const request = pending
   await setPending($, undefined)
   if (request === undefined) return
   if (!isApproved) {
     $.ui.toast(`Moonlight: phase change to ${request.to} denied`)
+    const denied =
+      `[moonlight] The operator DENIED the phase change to ${request.to}` +
+      (reason !== undefined ? `: ${reason}` : '') +
+      '. Stay in the current phase.'
     // The agent may be idle, waiting on this answer: a prompt wakes it.
-    void askModel($, `[moonlight] The operator DENIED the phase change to ${request.to}. Stay in the current phase.`).catch(
-      () => tellModel($, `[moonlight] The operator DENIED the phase change to ${request.to}. Stay in the current phase.`),
-    )
+    void askModel($, denied).catch(() => tellModel($, denied))
     return
   }
   const now = await setPhase($, request.to)
@@ -558,6 +871,7 @@ const captureBaseline = async ($: $, path: string | undefined): Promise<void> =>
       }
     }
     await $.fs.write(`${dir}/index.json`, JSON.stringify({ ...index, [absolute]: entry }))
+    reviewDirty = true
   } catch (error) {
     $.ui.toast(`Moonlight: no baseline for ${path}: ${String(error)}`)
   }
@@ -786,6 +1100,24 @@ const acceptReview = async ($: $): Promise<string> => {
   }
   $.ui.toast('Moonlight: all good, review accepted')
   return 'Review accepted, all good: the next review starts from here.'
+}
+
+// "Mark reviewed" for one file (the IDE's per-file accept): its baseline goes,
+// so it leaves the list until the agent changes it again. Session scope only:
+// against HEAD there is no baseline to drop.
+const acceptReviewFile = async ($: $, path: string): Promise<{ ok: boolean; message: string }> => {
+  const file = (await read($, reviewFilesState)).find(f => f.path === path)
+  if (file === undefined) return { ok: false, message: `${path} is not among the files under review.` }
+  const dir = await baselineDir($)
+  const absolute = `${file.repo}/${file.repoPath}`
+  const index = await readBaselineIndex($)
+  if (dir === undefined || index[absolute] === undefined)
+    return { ok: false, message: `${path} is reviewed against the last commit: commit it, or accept the whole review.` }
+  const { [absolute]: _accepted, ...rest } = index
+  await $.fs.write(`${dir}/index.json`, JSON.stringify(rest))
+  await update($, reviewCommentsState, list => (list ?? []).filter(c => c.path !== path))
+  await loadChangedFiles($)
+  return { ok: true, message: `${path} marked reviewed.` }
 }
 
 // Sends every comment and every kept finding to the agent as one message,
@@ -1054,6 +1386,7 @@ const togglePlanPane = async ($: $): Promise<string> => {
 const presentPlan = async ($: $, markdown: string, title: string): Promise<number> => {
   const version = ((await read($, planDocState))?.version ?? 0) + 1
   await update($, planDocState, () => ({ version, title, markdown }))
+  void publishState($).catch(() => undefined)
   await update($, planCommentsState, () => [])
   await update($, planRowSelectionState, () => null)
   await update($, planDraftState, () => [])
@@ -1189,22 +1522,13 @@ const tryStart = async ($: $, what: string, start: () => Promise<unknown>): Prom
   }
 }
 
-const startCommands = async ($: $): Promise<void> => {
+// What only a governing mod offers: the phase, the plan and their tools.
+const startGoverned = async ($: $): Promise<void> => {
   await tryStart($, '/phase', () =>
     $.command.register({
       name: 'phase',
       description: 'Set the Moonlight phase (operator only)',
       argumentHint: `${PHASES.join('|')}|next|approve|deny`,
-    }),
-  )
-  // Not `/review`: that is the built-in /code-review's alias.
-  await tryStart($, '/ml-review', () =>
-    $.command.register({
-      name: 'ml-review',
-      description: 'Moonlight: open or close the Review panel; comment a diff line (operator only)',
-      argumentHint:
-        '[comment <path:line[-end]> <text> | uncomment <id> | submit [summary] | accept | scope session|head | ' +
-        'run [skill] | cancel | attach <skill> | detach <skill> | skills [reset]]',
     }),
   )
   await tryStart($, '/ml-plan', () =>
@@ -1252,6 +1576,21 @@ const startCommands = async ($: $): Promise<void> => {
   if (surfaces.some(s => SURFACES_WITHOUT_BAND.includes(s))) await openPhasePane($, false)
 }
 
+// The Review panel works under either governor: it reads git and the
+// baselines the mod keeps.
+const startReview = async ($: $): Promise<void> => {
+  // Not `/review`: that is the built-in /code-review's alias.
+  await tryStart($, '/ml-review', () =>
+    $.command.register({
+      name: 'ml-review',
+      description: 'Moonlight: open or close the Review panel; comment a diff line (operator only)',
+      argumentHint:
+        '[comment <path:line[-end]> <text> | uncomment <id> | submit [summary] | accept | scope session|head | ' +
+        'run [skill] | cancel | attach <skill> | detach <skill> | skills [reset]]',
+    }),
+  )
+}
+
 // ---- Hooks ----
 
 export const register: Register = (on, options) => {
@@ -1259,13 +1598,22 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
-    // The gate first: whatever fails after it, the project stays governed.
-    // A gate that cannot start still registers the commands and the heartbeat:
-    // its hooks then refuse what they guard (each has a fail-closed handler).
-    await tryStart($, 'the gate', () => initGate($))
+    // A daemon that governs keeps the session; the mod then stands by. Any
+    // doubt (no answer, no hooks, a probe that fails) leaves the gate to the mod.
+    await setGovernor($, nextGovernor(undefined, await daemonGoverns($).catch(() => false)))
+    if (governor === 'daemon') {
+      await tryStart($, 'the review', () => initPaths($))
+      await tryStart($, 'the sandbox release', () => releaseSandbox($))
+    } else {
+      // The gate first: whatever fails after it, the project stays governed.
+      // A gate that cannot start still registers the commands and the heartbeat:
+      // its hooks then refuse what they guard (each has a fail-closed handler).
+      await tryStart($, 'the gate', () => initGate($))
+    }
     await tryStart($, 'the heartbeat', () => beat($))
     $.clock.every(POLL_MS, () => void tick($).catch(() => undefined))
-    await startCommands($)
+    if (governor !== 'daemon') await startGoverned($)
+    await startReview($)
     await tryStart($, 'baseline sweep', () => sweepStaleBaselines($))
     return started
   })
@@ -1977,6 +2325,14 @@ export const register: Register = (on, options) => {
   // switch a dim word beside it, then the engine's own hint.
   on('ui.render', { component: 'PromptHint' }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
+    // The daemon governs: its phase is shown by the IDE, not here.
+    if ((await read($, governorState)) === 'daemon')
+      return (
+        <Box flexDirection="row">
+          <Text key="governor" dimColor>{'☾ gated by the MoonlightCode daemon'}</Text>
+          {e.props.hint !== '' && <Text dimColor>{`   ${e.props.hint}`}</Text>}
+        </Box>
+      )
     const phase = await read($, phaseState)
     const style = PHASE_STYLE[phase]
     const next = nextPhase(phase)
@@ -2054,6 +2410,7 @@ export const register: Register = (on, options) => {
   // Every gate hook carries a handler: a hook that throws or runs out of time
   // would otherwise be skipped, and the call it guards would run.
   on('tool.call', async ($, e, next) => {
+    if (governor === 'daemon') return next(e)
     const phase = await syncPhase($)
     if (allowsWrites(phase) || isAllowedInPlan(e.tool)) return next(e)
     const label = phaseLabel(phase)
@@ -2076,6 +2433,7 @@ export const register: Register = (on, options) => {
   // carrying this mod's deny list, since even Auto keeps the gate's own files
   // write-denied.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    if (governor === 'daemon') return next(e)
     const phase = await syncPhase($)
     const refused = await shellRefusal($, 'Bash', phase)
     if (refused !== undefined) return refused
@@ -2084,7 +2442,7 @@ export const register: Register = (on, options) => {
   // Monitor runs its script in Bash's shell and sandbox. A WebSocket monitor
   // (`ws`, no `command`) runs nothing.
   on('tool.call', { tool: 'Monitor' }, async ($, e, next) => {
-    if ((e as unknown as { command?: unknown }).command === undefined) return next(e)
+    if (governor === 'daemon' || (e as unknown as { command?: unknown }).command === undefined) return next(e)
     const phase = await syncPhase($)
     const refused = await shellRefusal($, 'Monitor', phase)
     if (refused !== undefined) return refused

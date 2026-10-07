@@ -1,13 +1,19 @@
 package io.github.titouanfreville.moonlight.core
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.ActionGroup
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentFactory
 import com.intellij.openapi.util.Key
 import com.intellij.util.ui.JBUI
@@ -148,20 +154,36 @@ object MoonlightToolWindow {
  * still overflow in a window narrower than their icons; this way the other tab is always
  * one click away, whatever the header shows.
  */
-class OtherTabsGroup : com.intellij.openapi.actionSystem.ActionGroup(), DumbAware {
-    override fun getActionUpdateThread(): com.intellij.openapi.actionSystem.ActionUpdateThread =
-        com.intellij.openapi.actionSystem.ActionUpdateThread.EDT
+class OtherTabsGroup : ActionGroup(), DumbAware {
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
 
-    override fun getChildren(e: com.intellij.openapi.actionSystem.AnActionEvent?): Array<com.intellij.openapi.actionSystem.AnAction> {
+    override fun getChildren(e: AnActionEvent?): Array<AnAction> {
         val project = e?.project ?: return emptyArray()
         val window = ToolWindowManager.getInstance(project).getToolWindow(MoonlightToolWindow.ID) ?: return emptyArray()
+        // One action per tab, kept on the tab: a toolbar must get the same instances on every
+        // update, or it rebuilds its buttons each time (and the platform reports it).
         return MoonlightToolWindow.others(window).map { content ->
-            val name = content.getUserData(MoonlightToolWindow.LABEL)?.full ?: content.tabName
-            object : com.intellij.openapi.project.DumbAwareAction("Go to $name", "Switch to the $name tab", content.icon) {
-                override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) {
-                    window.contentManager.setSelectedContent(content, true)
-                }
-            }
+            content.getUserData(GO_TO) ?: GoToTab(content).also { content.putUserData(GO_TO, it) }
         }.toTypedArray()
+    }
+
+    private companion object {
+        val GO_TO: Key<AnAction> = Key.create("moonlight.goToTab")
+    }
+}
+
+/** Selects its tab; the label is read on each update, so a changing badge shows. */
+private class GoToTab(private val content: Content) : DumbAwareAction() {
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+
+    override fun update(e: AnActionEvent) {
+        val name = content.getUserData(MoonlightToolWindow.LABEL)?.full ?: content.tabName
+        e.presentation.text = "Go to $name"
+        e.presentation.description = "Switch to the $name tab"
+        e.presentation.icon = content.icon
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        content.manager?.setSelectedContent(content, true)
     }
 }

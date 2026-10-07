@@ -24,6 +24,8 @@
 import * as vscode from 'vscode';
 import * as controlApi from 'moonlight-control-client';
 
+import * as source from './review-source';
+
 /** Virtual scheme for the "before" side. Read-only: it is a historical snapshot. */
 export const BASELINE_SCHEME = 'moonlight-baseline';
 
@@ -51,7 +53,7 @@ export class BaselineProvider implements vscode.TextDocumentContentProvider {
     const { sessionId, filePath } = decodeBaselineUri(uri);
     let view: controlApi.BaselineView;
     try {
-      view = await controlApi.baseline(sessionId, filePath);
+      view = await source.baseline(sessionId, filePath);
     } catch (err) {
       return `// MoonlightCode: couldn't load the baseline.\n// ${
         err instanceof Error ? err.message : String(err)
@@ -262,7 +264,7 @@ export class ReviewComments {
     }
     let stored: controlApi.ReviewCommentView[];
     try {
-      stored = await controlApi.comments(sessionId);
+      stored = await source.comments(sessionId);
     } catch {
       return;
     }
@@ -310,7 +312,8 @@ export class ReviewComments {
         : vscode.CommentThreadCollapsibleState.Expanded;
       // The whole point: a comment is the start of a conversation, not a verdict.
       // The session can answer over the control API, and the reviewer answers here.
-      thread.canReply = true;
+      // The Claude Code plugin keeps no replies: its comments are one-shot.
+      thread.canReply = !source.isModSession(sessionId);
       this.threads.set(thread, {
         commentId: root.id,
         sessionId,
@@ -375,7 +378,7 @@ export class ReviewComments {
     const range = this.intendedRange(thread.uri, thread.range);
     const anchorText = await this.anchorText(thread.uri, range);
     try {
-      await controlApi.addComment({
+      await source.addComment({
         sessionId,
         scope: range ? 'Line' : 'File',
         path: filePath,
@@ -406,7 +409,7 @@ export class ReviewComments {
     text: string
   ): Promise<void> {
     try {
-      await controlApi.addComment({
+      await source.addComment({
         sessionId: state.sessionId,
         // Anchor fields are ignored for a reply — the root's are used.
         scope: 'Line',
@@ -468,7 +471,12 @@ export class ReviewComments {
     if (!state) {
       return;
     }
-    await controlApi.updateComment(state.sessionId, state.commentId, { resolved });
+    try {
+      await source.updateComment(state.sessionId, state.commentId, { resolved });
+    } catch (err) {
+      void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+      return;
+    }
     await this.refresh(state.sessionId, this.pathFor(thread.uri));
     this.onChanged();
   }
@@ -488,7 +496,12 @@ export class ReviewComments {
     if (body === undefined) {
       return;
     }
-    await controlApi.updateComment(state.sessionId, state.commentId, { body });
+    try {
+      await source.updateComment(state.sessionId, state.commentId, { body });
+    } catch (err) {
+      void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+      return;
+    }
     await this.refresh(state.sessionId, this.pathFor(thread.uri));
     this.onChanged();
   }
@@ -500,10 +513,15 @@ export class ReviewComments {
     }
     // Replies first: a deleted root would leave answers pointing at nothing, and an
     // orphaned reply is dropped from every view — invisible, but still in the store.
-    for (const id of state.replyIds) {
-      await controlApi.deleteComment(state.sessionId, id);
+    try {
+      for (const id of state.replyIds) {
+        await source.deleteComment(state.sessionId, id);
+      }
+      await source.deleteComment(state.sessionId, state.commentId);
+    } catch (err) {
+      void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+      return;
     }
-    await controlApi.deleteComment(state.sessionId, state.commentId);
     const filePath = this.pathFor(thread.uri);
     thread.dispose();
     this.threads.delete(thread);

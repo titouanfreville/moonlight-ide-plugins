@@ -8,8 +8,10 @@
  * operator sees an approval that did nothing.
  */
 import * as controlApi from 'moonlight-control-client';
+import type { MoonlightApi } from 'moonlight-core';
 
 import { approves, denialReason, type PlanVerdict } from './feedback';
+import { modPlanEntry } from './mod-route';
 
 /** What happened, in words the caller can show. */
 export type GateOutcome = { ok: true; summary: string } | { ok: false; error: string };
@@ -22,12 +24,22 @@ export type GateOutcome = { ok: true; summary: string } | { ok: false; error: st
  * is still their move.
  */
 export async function decidePlan(
+  core: MoonlightApi,
   sessionId: string,
   plan: string,
   comments: ReadonlyMap<number, string>,
   verdict: PlanVerdict
 ): Promise<GateOutcome> {
   try {
+    // A session the Claude Code mod governs: one entry, the feedback as its note.
+    if (core.governor?.(sessionId) === 'mod' && core.sendToMod) {
+      const version = core.heldApproval?.(sessionId)?.planVersion;
+      if (version === undefined) {
+        return { ok: false, error: 'no plan is waiting for a verdict in that session' };
+      }
+      const answer = await core.sendToMod(sessionId, modPlanEntry(version, plan, comments, verdict));
+      return answer.ok ? { ok: true, summary: answer.message } : { ok: false, error: answer.message };
+    }
     if (approves(verdict)) {
       await controlApi.approvePlan(sessionId);
       if (comments.size === 0) {
@@ -82,11 +94,21 @@ async function deliverNotes(sessionId: string, body: string): Promise<GateOutcom
  * Answer a danger-zone or MCP-authorize hold — no plan, just allow or refuse.
  */
 export async function decideAction(
+  core: MoonlightApi,
   sessionId: string,
   allow: boolean,
   reason: string
 ): Promise<GateOutcome> {
   try {
+    // Under the Claude Code mod, the one action a session holds on is a phase request.
+    if (core.governor?.(sessionId) === 'mod' && core.sendToMod) {
+      const answer = await core.sendToMod(sessionId, {
+        kind: 'request',
+        approve: allow,
+        ...(allow ? {} : { reason }),
+      });
+      return answer.ok ? { ok: true, summary: answer.message } : { ok: false, error: answer.message };
+    }
     await controlApi.verdict(sessionId, allow, allow ? undefined : reason);
     return {
       ok: true,

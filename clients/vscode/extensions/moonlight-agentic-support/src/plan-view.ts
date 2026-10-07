@@ -121,7 +121,7 @@ export class PlanReviewPanel {
     if (!sessionId) {
       return;
     }
-    const outcome = await decidePlan(sessionId, this.plan, this.comments, message.verdict);
+    const outcome = await decidePlan(this.core, sessionId, this.plan, this.comments, message.verdict);
     if (outcome.ok) {
       this.comments = new Map();
       void vscode.window.showInformationMessage(outcome.summary);

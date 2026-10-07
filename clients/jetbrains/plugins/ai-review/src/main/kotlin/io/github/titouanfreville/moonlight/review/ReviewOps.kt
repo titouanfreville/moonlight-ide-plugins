@@ -58,7 +58,7 @@ object ReviewOps {
      * [resolveReviewSession] pick, and the operator is asked when they cannot.
      */
     fun openSessionReview(project: Project, requested: String? = null) {
-        background(project, "Loading the review queue", { core.control.reviewQueue(diffs = false) }) { queue ->
+        background(project, "Loading the review queue", { ReviewSource.reviewQueue(diffs = false) }) { queue ->
             // Ignored paths are warnings, not files to diff.
             val bySession = queue.filter { !it.ignored }.groupBy { it.sessionId }
             if (bySession.isEmpty()) {
@@ -117,7 +117,7 @@ object ReviewOps {
     fun openDiff(project: Project, item: ReviewQueueItem) {
         if (item.ignored) return
         if (!confirmReviewable(project, item.sessionId)) return
-        background(project, "Loading the review", { core.control.reviewQueue(item.sessionId, diffs = false) }) { queue ->
+        background(project, "Loading the review", { ReviewSource.reviewQueue(item.sessionId, diffs = false) }) { queue ->
             val files = queue.filter { !it.ignored }.map { ReviewedFile(it.filePath, it) }.ifEmpty { listOf(ReviewedFile(item.filePath, item)) }
             openFiles(project, item.sessionId, item.sessionTitle ?: item.sessionId, files, focus = item.filePath)
         }
@@ -128,7 +128,7 @@ object ReviewOps {
      * but the conversation is still in the tracker.
      */
     fun reopenFromComments(project: Project, sessionId: String) {
-        background(project, "Loading review comments", { core.control.comments(sessionId) }) { comments ->
+        background(project, "Loading review comments", { ReviewSource.comments(sessionId) }) { comments ->
             val files = reviewFilesFromComments(comments)
             if (files.isEmpty()) {
                 notify(project, "No file comments to reopen for this session.")
@@ -176,7 +176,7 @@ object ReviewOps {
         val body = Messages.showMultilineInputDialog(project, "Comment on $where (${location.side.name.lowercase()} side):", "Review Comment", "", null, null)
             ?.trim()?.takeIf { it.isNotEmpty() } ?: return
         background(project, "Saving comment", {
-            core.control.addComment(
+            ReviewSource.addComment(
                 location.sessionId,
                 if (range == null) CommentScope.File else CommentScope.Line,
                 location.path,
@@ -200,14 +200,14 @@ object ReviewOps {
             ?.trim()?.takeIf { it.isNotEmpty() } ?: return
         val root = thread.root
         background(project, "Saving reply", {
-            core.control.addComment(session, root.scope, root.path, root.side, root.startLine, root.endLine, body, parentId = root.id)
+            ReviewSource.addComment(session, root.scope, root.path, root.side, root.startLine, root.endLine, body, parentId = root.id)
         }) { ReviewState.of(project).reload(session) }
     }
 
     fun setResolved(project: Project, thread: CommentThread, resolved: Boolean) {
         val session = sessionFor(project, thread) ?: return
         background(project, if (resolved) "Resolving thread" else "Reopening thread", {
-            core.control.updateComment(session, thread.root.id, resolved = resolved)
+            ReviewSource.updateComment(session, thread.root.id, resolved = resolved)
         }) { ReviewState.of(project).reload(session) }
     }
 
@@ -217,7 +217,7 @@ object ReviewOps {
         val body = Messages.showMultilineInputDialog(project, "Edit comment (it is queued again for the next review):", "Edit Review Comment", thread.root.body, null, null)
             ?.trim()?.takeIf { it.isNotEmpty() && it != thread.root.body } ?: return
         background(project, "Saving comment", {
-            core.control.updateComment(session, thread.root.id, body = body)
+            ReviewSource.updateComment(session, thread.root.id, body = body)
         }) { ReviewState.of(project).reload(session) }
     }
 
@@ -228,8 +228,8 @@ object ReviewOps {
         background(project, "Deleting thread", {
             // Replies first: a reply left behind without its root is dropped from view but
             // would still sit in the tracker.
-            thread.replies.forEach { core.control.deleteComment(session, it.id) }
-            core.control.deleteComment(session, thread.root.id)
+            thread.replies.forEach { ReviewSource.deleteComment(session, it.id) }
+            ReviewSource.deleteComment(session, thread.root.id)
         }) { ReviewState.of(project).reload(session) }
     }
 
@@ -252,7 +252,7 @@ object ReviewOps {
             notify(project, "No review to send — open a session's changes first.", NotificationType.WARNING)
             return
         }
-        background(project, "Sending review", { core.control.submitReview(sessionId) }) { outcome ->
+        background(project, "Sending review", { ReviewSource.submitReview(sessionId) }) { outcome ->
             if (outcome == null) {
                 notify(project, "Nothing to send — no pending comments.")
                 return@background
@@ -285,7 +285,7 @@ object ReviewOps {
         }
         terminal.sendLine(pointer)
         terminal.show()
-        background(project, "Recording delivery", { core.control.markDelivered(sessionId, ids) }) {
+        background(project, "Recording delivery", { ReviewSource.markDelivered(sessionId, ids) }) {
             Delivery.handOff(project, pointer, reviewPath, "Review delivered — $n comment(s) sent to ${terminal.name}.", NotificationType.INFORMATION)
             ReviewState.of(project).reload(sessionId)
         }
@@ -294,10 +294,10 @@ object ReviewOps {
     // ---- Settling queue items --------------------------------------------------------
 
     fun markReviewed(project: Project, item: ReviewQueueItem, then: () -> Unit) =
-        background(project, "Marking reviewed", { core.control.accept(item.sessionId, item.filePath) }) { then() }
+        background(project, "Marking reviewed", { ReviewSource.accept(item.sessionId, item.filePath) }) { then() }
 
     fun ignore(project: Project, item: ReviewQueueItem, then: () -> Unit) =
-        background(project, "Ignoring file", { core.control.setIgnored(item.sessionId, item.filePath, true) }) { then() }
+        background(project, "Ignoring file", { ReviewSource.setIgnored(item.sessionId, item.filePath, true) }) { then() }
 
     /**
      * Reject a file: drop it from the queue and steer the session. Only the first is
@@ -312,7 +312,7 @@ object ReviewOps {
             null,
             null,
         ) ?: return
-        background(project, "Rejecting change", { core.control.reject(item.sessionId, item.filePath, message.trim()) }) { outcome ->
+        background(project, "Rejecting change", { ReviewSource.reject(item.sessionId, item.filePath, message.trim()) }) { outcome ->
             when (val feedback = outcome.feedback) {
                 is FeedbackDelivery.Undeliverable ->
                     notify(project, "Rejected — but your feedback was NOT delivered to the session: ${feedback.reason}", NotificationType.WARNING)

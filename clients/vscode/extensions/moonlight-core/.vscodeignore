@@ -11,3 +11,6 @@ tsconfig.json
 
 # A packaged .vsix in the extension root would otherwise be packed into the next one.
 *.vsix
+
+# The bundled Claude Code mod ships as source: Claude Code loads its .ts and .tsx.
+!claude-mod/**

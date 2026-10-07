@@ -1,7 +1,11 @@
 {
   "name": "moonlightcode",
-  "version": "0.1.0",
+  "version": "0.1.6",
   "description": "MoonlightCode for Claude Code: workflow phases, with Plan as a read-only boundary while Claude Code runs in auto mode",
+  "author": {
+    "name": "Titouan Freville",
+    "url": "https://github.com/titouanfreville"
+  },
   "types": "./types/index.d.ts",
   "userConfig": {
     "reviewSkills": {

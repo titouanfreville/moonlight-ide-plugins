@@ -60,6 +60,28 @@ interface MoonlightApi {
      */
     fun backendError(): String?
 
+    /**
+     * Whether the MoonlightCode mod for Claude Code covers for a missing daemon: `Active`
+     * means new Claude Code sessions are gated by it. Asked only while the daemon is down,
+     * so `Unknown` while it is up. A default, so a newer dependent runs on an older core.
+     */
+    fun claudeMod(): ClaudeModState = ClaudeModState.Unknown
+
+    /** Install (or enable) the mod and turn function hooks on, with a progress indicator. */
+    fun installClaudeMod(project: Project?) = Unit
+
+    /**
+     * Who governs a session: the daemon, or the MoonlightCode mod inside Claude Code (see
+     * [ModBridge]). The panels are the same; only where a decision goes differs.
+     */
+    fun governor(sessionId: String): Governor = Governor.Daemon
+
+    /** The review of a session the mod governs: files, comments, AI review findings. */
+    fun modReview(sessionId: String): ModReview? = null
+
+    /** Hand one operator decision to the mod governing `sessionId`. Blocking — call off the EDT. */
+    fun sendToMod(sessionId: String, entry: ModEntry): ModAnswer = ModAnswer(false, "this MoonlightCode Core cannot reach the Claude Code plugin")
+
     /** Refresh now instead of waiting for the next tick. Completes after the read. */
     fun refresh(): CompletableFuture<Unit>
 
@@ -152,6 +174,9 @@ data class ActiveSession(val sessionId: String, val how: How) {
  * neither alone is enough: the stream announces a hold once, and the endpoint is a
  * snapshot.
  */
+/** Who governs a session. */
+enum class Governor { Daemon, Mod }
+
 data class HeldApproval(
     val sessionId: String,
     /** What is being asked, in the gate's own words. */
@@ -162,6 +187,8 @@ data class HeldApproval(
     val mcpTool: String?,
     /** When the hold started (epoch ms). */
     val sinceMs: Long,
+    /** The plan's version, for a plan held by the Claude Code mod (its verdicts name it). */
+    val planVersion: Int? = null,
 )
 
 /** A terminal MoonlightCode started for a session — the only place we can type a message. */

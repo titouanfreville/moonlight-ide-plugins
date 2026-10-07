@@ -5,8 +5,10 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
+import com.intellij.openapi.components.serviceOrNull
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.EditorCustomElementRenderer
 import com.intellij.openapi.editor.EditorFactory
@@ -37,6 +39,8 @@ import java.awt.Graphics2D
 import java.awt.Rectangle
 import java.awt.RenderingHints
 import javax.swing.Icon
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Draws review threads into every editor that shows a file under review — the diff's two
@@ -167,7 +171,11 @@ class ReviewDecorator(private val project: Project) : Disposable {
 
 class ReviewStartup : ProjectActivity {
     override suspend fun execute(project: Project) {
-        ApplicationManager.getApplication().invokeLater({ ReviewDecorator.of(project).start() }, project.disposed)
+        // On the plugin's coroutine, not a raw invokeLater: a dynamic unload (e.g. core installed
+        // right after) cancels it, where a queued runnable would still run against gone services.
+        withContext(Dispatchers.EDT) {
+            if (!project.isDisposed) project.serviceOrNull<ReviewDecorator>()?.start()
+        }
     }
 }
 

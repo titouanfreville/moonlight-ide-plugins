@@ -23,6 +23,8 @@ import type {
   SessionUsage,
   UsageResponse,
 } from 'moonlight-control-client';
+import type { ClaudeModState } from './claude-mod';
+import type { ModAnswer, ModEntry, ModReview } from './mod-bridge';
 
 /** Terminals this extension family started — the only sessions we can write to. */
 export interface OwnedTerminals {
@@ -77,6 +79,8 @@ export interface HeldApproval {
   mcpTool: string | undefined;
   /** When the hold started (epoch ms). */
   sinceMs: number;
+  /** The plan's version, for a plan held by the Claude Code mod (its verdicts name it). */
+  planVersion?: number;
 }
 
 export interface MoonlightApi {
@@ -129,6 +133,28 @@ export interface MoonlightApi {
    * than thrown: a missing daemon is an expected state, not an error.
    */
   backendError(): string | undefined;
+
+  /**
+   * Whether the MoonlightCode mod for Claude Code covers for a missing daemon:
+   * `active` means new Claude Code sessions are gated by it. Asked only while the
+   * daemon is down, so `unknown` while it is up. Optional, like every later member.
+   */
+  claudeMod?(): ClaudeModState;
+  /** Install (or enable) the mod and turn function hooks on, with the operator watching. */
+  installClaudeMod?(): Promise<void>;
+
+  /**
+   * Who governs a session: the daemon, or the MoonlightCode mod inside Claude Code
+   * (see mod-bridge.ts). The panels are the same; only where a decision goes differs.
+   */
+  governor?(sessionId: string): 'daemon' | 'mod';
+  /**
+   * Hand one operator decision to the mod governing `sessionId`, and wait for its
+   * answer. Reports failure rather than throwing, as the daemon calls' wrappers do.
+   */
+  sendToMod?(sessionId: string, entry: ModEntry): Promise<ModAnswer>;
+  /** The review of a session the mod governs: files, comments, AI review findings. */
+  modReview?(sessionId: string): ModReview | undefined;
 
   /** Force a refresh now instead of waiting for the next tick. */
   refresh(): Promise<void>;
@@ -193,4 +219,15 @@ export interface MoonlightApi {
 }
 
 /** The extension id dependents look up. Kept here so it is written down once. */
+export type {
+  ModAnswer,
+  ModEntry,
+  ModFinding,
+  ModPhase,
+  ModPlanVerdict,
+  ModReview,
+  ModReviewComment,
+  ModReviewFile,
+} from './mod-bridge';
+
 export const CORE_EXTENSION_ID = 'titouanfreville.moonlight-core';

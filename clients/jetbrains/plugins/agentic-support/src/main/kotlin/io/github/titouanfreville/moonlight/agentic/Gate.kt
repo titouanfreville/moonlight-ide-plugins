@@ -4,6 +4,10 @@ import io.github.titouanfreville.moonlight.client.CommentScope
 import io.github.titouanfreville.moonlight.client.ControlApi
 import io.github.titouanfreville.moonlight.client.DiffSide
 import io.github.titouanfreville.moonlight.client.FeedbackDelivery
+import io.github.titouanfreville.moonlight.core.Governor
+import io.github.titouanfreville.moonlight.core.ModAnswer
+import io.github.titouanfreville.moonlight.core.ModEntry
+import io.github.titouanfreville.moonlight.core.MoonlightApi
 
 /**
  * Answering a hold — a port of `gate.ts`.
@@ -21,9 +25,18 @@ sealed interface GateOutcome {
     data class Failed(val error: String) : GateOutcome
 }
 
-fun decidePlan(control: ControlApi, sessionId: String, plan: String, comments: Map<Int, String>, verdict: PlanVerdict): GateOutcome =
+fun decidePlan(core: MoonlightApi, sessionId: String, plan: String, comments: Map<Int, String>, verdict: PlanVerdict): GateOutcome =
     try {
-        if (verdict.approves) {
+        val control = core.control
+        // A session the Claude Code mod governs: one entry, the feedback as its note.
+        if (core.governor(sessionId) == Governor.Mod) {
+            val version = core.heldApproval(sessionId)?.planVersion
+            if (version == null) {
+                GateOutcome.Failed("no plan is waiting for a verdict in that session")
+            } else {
+                outcomeOf(core.sendToMod(sessionId, modPlanEntry(version, plan, comments, verdict)))
+            }
+        } else if (verdict.approves) {
             control.approvePlan(sessionId)
             if (comments.isEmpty()) {
                 GateOutcome.Ok("Plan approved — the session may proceed.")
@@ -57,11 +70,21 @@ private fun deliverNotes(control: ControlApi, sessionId: String, body: String): 
     }
 }
 
-/** Answer a danger-zone or MCP-authorize hold — no plan, just allow or refuse. */
-fun decideAction(control: ControlApi, sessionId: String, allow: Boolean, reason: String): GateOutcome =
+/**
+ * Answer a danger-zone or MCP-authorize hold — no plan, just allow or refuse. Under the
+ * Claude Code mod, the one action a session holds on is a phase request.
+ */
+fun decideAction(core: MoonlightApi, sessionId: String, allow: Boolean, reason: String): GateOutcome =
     try {
-        control.verdict(sessionId, allow, if (allow) null else reason)
-        GateOutcome.Ok(if (allow) "Action allowed." else "Action refused — the session was told why.")
+        if (core.governor(sessionId) == Governor.Mod) {
+            outcomeOf(core.sendToMod(sessionId, ModEntry.Request(allow, if (allow) null else reason)))
+        } else {
+            core.control.verdict(sessionId, allow, if (allow) null else reason)
+            GateOutcome.Ok(if (allow) "Action allowed." else "Action refused — the session was told why.")
+        }
     } catch (e: Exception) {
         GateOutcome.Failed(e.message ?: e.toString())
     }
+
+private fun outcomeOf(answer: ModAnswer): GateOutcome =
+    if (answer.ok) GateOutcome.Ok(answer.message) else GateOutcome.Failed(answer.message)

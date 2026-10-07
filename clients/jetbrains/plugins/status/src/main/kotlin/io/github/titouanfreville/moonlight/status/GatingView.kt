@@ -5,6 +5,7 @@ import io.github.titouanfreville.moonlight.client.HookStatusEntry
 import io.github.titouanfreville.moonlight.client.SessionStatus
 import io.github.titouanfreville.moonlight.client.sessionLabel
 import io.github.titouanfreville.moonlight.core.ActiveSession
+import io.github.titouanfreville.moonlight.core.ClaudeModState
 import io.github.titouanfreville.moonlight.core.describePanelKey
 import io.github.titouanfreville.moonlight.core.isInside
 
@@ -21,6 +22,9 @@ import io.github.titouanfreville.moonlight.core.isInside
 
 enum class GatingIcon { NoBackend, Unlocked, Question, Frozen, Governed }
 
+/** Shown in place of the daemon's name when the Claude Code plugin governs instead. */
+const val GOVERNED_BY_PLUGIN = "MoonlightCode · plugin"
+
 /**
  * What clicking the indicator does. It does the thing the bar is complaining about, so it
  * is chosen per state rather than fixed.
@@ -30,6 +34,7 @@ enum class GatingAction(val actionId: String?) {
     Adopt("Moonlight.SessionControl.Adopt"),
     SetActive("Moonlight.SessionControl.SetActive"),
     Refresh(null),
+    InstallClaudeMod("Moonlight.InstallClaudeMod"),
 }
 
 data class GatingView(
@@ -48,14 +53,53 @@ fun gatingView(
     active: ActiveSession?,
     panelKey: String?,
     folders: List<String>,
+    claudeMod: ClaudeModState = ClaudeModState.Unknown,
+    /** Whether the active session is governed by the Claude Code plugin rather than the daemon. */
+    modGoverned: Boolean = false,
 ): GatingView {
+    // A session the Claude Code plugin governs is gated whatever the daemon says: its hooks
+    // are the plugin's, so neither "no backend" nor "hooks missing" is true of it.
+    val modSession = if (modGoverned) active?.let { a -> sessions.firstOrNull { it.sessionId == a.sessionId } } else null
+    if (modSession != null) {
+        val view = governedView(modSession, sessions, active, folders)
+        return view.copy(
+            text = "${view.text} · plugin",
+            tooltip = view.tooltip + listOf("", "Gated by the MoonlightCode plugin inside Claude Code (no daemon needed).") +
+                identifiedBy(active, panelKey),
+        )
+    }
     if (backendError != null) {
+        // No daemon. The Claude Code plugin may be covering for it (see ClaudeMod): then
+        // sessions are gated, inside Claude Code, and the bar must not cry "nothing is gated".
+        if (claudeMod == ClaudeModState.Active) {
+            return GatingView(
+                GatingIcon.Governed,
+                GOVERNED_BY_PLUGIN,
+                warn = false,
+                tooltip = listOf(
+                    "No MoonlightCode daemon is running. Claude Code sessions are gated by the",
+                    "MoonlightCode plugin for Claude Code: the phase, the Plan and Review panels are",
+                    "in the Claude Code session itself.",
+                    "Sessions opened before the plugin was installed are gated once restarted.",
+                    "",
+                    backendError,
+                    "",
+                    "Click to retry the daemon now.",
+                ),
+                action = GatingAction.Refresh,
+            )
+        }
+        val offer = when (claudeMod) {
+            ClaudeModState.Off -> "The MoonlightCode plugin for Claude Code is installed but off: click to turn it on."
+            ClaudeModState.Missing -> "Click to install the MoonlightCode plugin for Claude Code: it gates sessions while no daemon runs."
+            else -> null
+        }
         return GatingView(
             GatingIcon.NoBackend,
             "MoonlightCode",
             warn = true,
-            tooltip = listOf("No MoonlightCode backend reachable, so nothing is gated.", backendError, "", "Click to retry now."),
-            action = GatingAction.Refresh,
+            tooltip = listOfNotNull("No MoonlightCode backend reachable, so nothing is gated.", backendError, "", offer ?: "Click to retry now."),
+            action = if (offer != null) GatingAction.InstallClaudeMod else GatingAction.Refresh,
         )
     }
 

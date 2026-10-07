@@ -72,3 +72,50 @@ intellijPlatform {
 tasks.test {
     useJUnitPlatform()
 }
+
+// The MoonlightCode mod for Claude Code, shipped as a local marketplace in this plugin's
+// resources: on a fresh install with no daemon and no network to reach the repository's
+// marketplace, this copy is what the IDE installs into Claude Code (see ClaudeMod.kt).
+// `files.txt` lists the files, since a jar's resources cannot be listed as a folder.
+val claudeModSource = rootProject.layout.projectDirectory.dir("../claude-code/moonlight")
+val bundleClaudeMod by tasks.registering {
+    val out = layout.buildDirectory.dir("generated/claude-mod")
+    inputs.dir(claudeModSource)
+    outputs.dir(out)
+    doLast {
+        val root = out.get().dir("moonlight/claude-mod").asFile
+        root.deleteRecursively()
+        val source = claudeModSource.asFile
+        val shipped = listOf(".claude-plugin", "hooks", "types", "README.md")
+        val leftBehind = { f: File ->
+            f.name.endsWith(".test.ts") || f.name.endsWith(".test.tsx") || f.name == "gate-kit.ts" ||
+                f.relativeTo(source).invariantSeparatorsPath.startsWith(".claude-plugin/types")
+        }
+        val files = shipped.map { source.resolve(it) }
+            .flatMap { if (it.isDirectory) it.walkTopDown().filter(File::isFile).toList() else listOf(it) }
+            .filterNot(leftBehind)
+        for (file in files) file.copyTo(root.resolve("moonlightcode/${file.relativeTo(source).invariantSeparatorsPath}"), overwrite = true)
+        val manifest = groovy.json.JsonSlurper().parse(source.resolve(".claude-plugin/plugin.json")) as Map<*, *>
+        val marketplace = mapOf(
+            // The repository's marketplace name: either copy installs `moonlightcode@moonlight`.
+            "name" to "moonlight",
+            "owner" to mapOf("name" to "Titouan Freville"),
+            "plugins" to listOf(
+                mapOf(
+                    "name" to "moonlightcode",
+                    "source" to "./moonlightcode",
+                    "version" to manifest["version"],
+                    "description" to manifest["description"],
+                ),
+            ),
+        )
+        root.resolve(".claude-plugin").mkdirs()
+        root.resolve(".claude-plugin/marketplace.json").writeText(groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(marketplace)) + "\n")
+        val listed = root.walkTopDown().filter(File::isFile).map { it.relativeTo(root).invariantSeparatorsPath }.sorted()
+        root.resolve("files.txt").writeText(listed.joinToString("\n") + "\n")
+    }
+}
+
+sourceSets.main {
+    resources.srcDir(bundleClaudeMod)
+}

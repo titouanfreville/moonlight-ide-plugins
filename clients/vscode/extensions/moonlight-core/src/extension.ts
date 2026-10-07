@@ -5,13 +5,26 @@
  * installed separately without each one opening its own connection, running its own
  * poll loop, and forming its own opinion about what the fleet is doing.
  */
+import { execFile } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import * as controlApi from 'moonlight-control-client';
+
+import {
+  type ClaudeModState,
+  type CliResult,
+  claudeSettingsPath,
+  installMod,
+  readModState,
+  settingsFileAt,
+} from './claude-mod';
 
 import { windowOwnsSession } from './ownership';
 import { isClaudePanel, matchPanelSession } from './panel-match';
 
 import { ensureDownloadedDaemon } from './daemon-install';
+import { modHold, modSession, readModStates, sendToMod, type ModState } from './mod-bridge';
 import type {
   DiscoverableSession,
   HookStatusEntry,
@@ -45,14 +58,134 @@ function daemonOptions(): controlApi.DaemonOptions {
   };
 }
 
+/**
+ * Runs the `claude` CLI. Through a login shell on macOS and Linux, because an
+ * editor started from the dock does not get the PATH a terminal has, and
+ * `claude` is usually installed somewhere only that PATH names. The arguments
+ * travel as the shell's positional parameters, never inside the script.
+ */
+function runClaude(args: readonly string[]): Promise<CliResult> {
+  const quoted = (arg: string) => (/[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg);
+  const [file, argv, shell] =
+    process.platform === 'win32'
+      ? ['claude', args.map(quoted), true]
+      : [process.env.SHELL || '/bin/sh', ['-lc', 'exec claude "$@"', 'claude', ...args], false];
+  return new Promise((resolve, reject) => {
+    execFile(file, argv, { timeout: 120_000, maxBuffer: 4 * 1024 * 1024, shell }, (err, stdout, stderr) => {
+      const code = (err as { code?: unknown } | null)?.code;
+      if (err && typeof code !== 'number') {
+        reject(err);
+        return;
+      }
+      resolve({ code: err ? (code as number) : 0, stdout, stderr });
+    });
+  });
+}
+
+/** How many failed polls in a row (five seconds apart) before the mod is offered. */
+const OFFER_MOD_AFTER_FAILURES = 3;
+const MOD_DONT_ASK_KEY = 'moonlight.claudeMod.dontAsk';
+
 export function activate(context: vscode.ExtensionContext): MoonlightApi {
   const changed = new vscode.EventEmitter<void>();
   context.subscriptions.push(changed);
 
+  // The daemon's sessions, and the Claude Code mod's (see mod-bridge.ts); `sessions`
+  // is both, which is all a panel needs to know.
+  let daemonSessions: readonly DiscoverableSession[] = [];
+  let modStates: readonly ModState[] = [];
   let sessions: readonly DiscoverableSession[] = [];
   let gating: readonly HookStatusEntry[] = [];
   let usage: UsageResponse | undefined;
   let backendError: string | undefined;
+
+  // ---------------------------------------------------------------------------
+  // The fallback: the MoonlightCode mod for Claude Code (see claude-mod.ts). It
+  // is asked about only while the daemon is down: spawning the CLI on every
+  // window open, for a state that matters only then, would be paid for nothing.
+  // ---------------------------------------------------------------------------
+  let claudeMod: ClaudeModState = 'unknown';
+  let failedPolls = 0;
+  let modOffered = false;
+  let installingMod: Promise<void> | undefined;
+  const claudeSettings = settingsFileAt(claudeSettingsPath());
+
+  const checkMod = async (): Promise<void> => {
+    const next = await readModState(runClaude, claudeSettings).catch((): ClaudeModState => 'unknown');
+    if (next !== claudeMod) {
+      claudeMod = next;
+      changed.fire();
+    }
+  };
+
+  /**
+   * The bundled marketplace, copied out of the extension to global storage: the
+   * extension's own folder changes path with every update, and Claude Code keeps
+   * the path a local marketplace was added from.
+   */
+  const bundledMarketplace = (): string | undefined => {
+    const from = path.join(context.extensionPath, 'claude-mod');
+    if (!fs.existsSync(path.join(from, '.claude-plugin', 'marketplace.json'))) {
+      return undefined;
+    }
+    const to = path.join(context.globalStorageUri.fsPath, 'claude-mod');
+    try {
+      fs.rmSync(to, { recursive: true, force: true });
+      fs.cpSync(from, to, { recursive: true });
+      return to;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const installClaudeMod = (): Promise<void> => {
+    installingMod ??= (async () => {
+      const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Installing the MoonlightCode plugin for Claude Code…' },
+        () => installMod(runClaude, claudeSettings, bundledMarketplace())
+      );
+      await checkMod();
+      if (result.ok) {
+        void vscode.window.showInformationMessage(
+          'MoonlightCode plugin installed for Claude Code. New Claude Code sessions are gated by it while no ' +
+            'daemon runs; restart the sessions already open to gate them too.'
+        );
+      } else {
+        void vscode.window.showErrorMessage(`MoonlightCode plugin not installed: ${result.error}`);
+      }
+    })().finally(() => {
+      installingMod = undefined;
+    });
+    return installingMod;
+  };
+  context.subscriptions.push(
+    vscode.commands.registerCommand('moonlight.core.installClaudeMod', () => installClaudeMod())
+  );
+
+  /** Offered once per window, after the daemon stayed down long enough for autostart to have had its go. */
+  const offerMod = async (): Promise<void> => {
+    if (modOffered || context.globalState.get<boolean>(MOD_DONT_ASK_KEY)) {
+      return;
+    }
+    await checkMod();
+    if (claudeMod !== 'missing' && claudeMod !== 'off') {
+      return;
+    }
+    modOffered = true;
+    const choice = await vscode.window.showWarningMessage(
+      'No MoonlightCode daemon is running, so Claude Code sessions are not gated. Install the MoonlightCode ' +
+        'plugin for Claude Code? It gates each session itself until a daemon runs. This installs ' +
+        '"moonlightcode" from the moonlight marketplace and turns on function hooks in ~/.claude/settings.json.',
+      'Install',
+      'Not now',
+      "Don't ask again"
+    );
+    if (choice === 'Install') {
+      await installClaudeMod();
+    } else if (choice === "Don't ask again") {
+      await context.globalState.update(MOD_DONT_ASK_KEY, true);
+    }
+  };
 
   const terminals = new SessionTerminals(context);
 
@@ -130,13 +263,15 @@ export function activate(context: vscode.ExtensionContext): MoonlightApi {
       // waking every dependent each time would make them redraw for nothing.
       const same =
         backendError === undefined &&
-        JSON.stringify(nextSessions) === JSON.stringify(sessions) &&
+        JSON.stringify(nextSessions) === JSON.stringify(daemonSessions) &&
         JSON.stringify(nextGating) === JSON.stringify(gating) &&
         JSON.stringify(nextUsage) === JSON.stringify(usage);
-      sessions = nextSessions;
+      daemonSessions = nextSessions;
+      sessions = mergedSessions();
       gating = nextGating;
       usage = nextUsage;
       backendError = undefined;
+      failedPolls = 0;
       controlApi.daemonReachable();
       if (!same) {
         changed.fire();
@@ -173,12 +308,62 @@ export function activate(context: vscode.ExtensionContext): MoonlightApi {
         backendError = reported;
         changed.fire();
       }
+      // The first failure of a streak learns whether the mod covers for the
+      // daemon; a streak long enough that autostart could not fix it offers it.
+      failedPolls += 1;
+      if (failedPolls === 1) {
+        void checkMod();
+      } else if (failedPolls === OFFER_MOD_AFTER_FAILURES) {
+        void offerMod();
+      }
     }
   };
 
   void refresh();
   const timer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
+
+  // ---------------------------------------------------------------------------
+  // The Claude Code mod's sessions. Read on a timer of their own, every two seconds
+  // (the mod's own tick), whether or not a daemon answers: the mod governs exactly
+  // when the daemon does not.
+  // ---------------------------------------------------------------------------
+  const modDir = () => path.join(controlApi.stateAnchor(), '.moonlight', 'mod', 'sessions');
+  /** When each mod hold was first seen, so "waiting 40s" means what it says. */
+  const modHoldSince = new Map<string, { key: string; since: number }>();
+
+  function mergedSessions(): readonly DiscoverableSession[] {
+    const mine = new Set(modStates.map((s) => s.sessionId));
+    return [...daemonSessions.filter((s) => !mine.has(s.session_id)), ...modStates.map(modSession)];
+  }
+
+  const modHoldOf = (sessionId: string) => {
+    const state = modStates.find((s) => s.sessionId === sessionId);
+    return state ? modHold(state, modHoldSince.get(sessionId)?.since ?? Date.now()) : undefined;
+  };
+
+  const refreshMod = (): void => {
+    const next = readModStates(modDir(), Date.now());
+    if (JSON.stringify(next.map(({ updatedMs: _u, ...rest }) => rest)) ===
+        JSON.stringify(modStates.map(({ updatedMs: _u, ...rest }) => rest))) {
+      return;
+    }
+    modStates = next;
+    for (const state of next) {
+      const hold = modHold(state, Date.now());
+      const key = hold ? `${hold.what}#${hold.planVersion ?? ''}` : '';
+      if (!hold) {
+        modHoldSince.delete(state.sessionId);
+      } else if (modHoldSince.get(state.sessionId)?.key !== key) {
+        modHoldSince.set(state.sessionId, { key, since: Date.now() });
+      }
+    }
+    sessions = mergedSessions();
+    changed.fire();
+    heldChanged.fire();
+  };
+  const modTimer = setInterval(refreshMod, 2000);
+  context.subscriptions.push({ dispose: () => clearInterval(modTimer) });
 
   // ---------------------------------------------------------------------------
   // The gate: holds, and the plans behind them.
@@ -337,12 +522,26 @@ export function activate(context: vscode.ExtensionContext): MoonlightApi {
     usage: () => usage,
     sessionUsage: (sessionId) => usage?.sessions.find((s) => s.session_id === sessionId),
     backendError: () => backendError,
+    claudeMod: () => claudeMod,
+    installClaudeMod,
     refresh,
     onDidChange: changed.event,
-    heldApproval: (sessionId) => gate.approval(sessionId),
-    heldApprovals: () => gate.approvals(),
+    heldApproval: (sessionId) => modHoldOf(sessionId) ?? gate.approval(sessionId),
+    heldApprovals: () =>
+      [
+        ...gate.approvals().filter((h) => !modStates.some((s) => s.sessionId === h.sessionId)),
+        ...modStates.flatMap((s) => modHoldOf(s.sessionId) ?? []),
+      ].sort((a, b) => a.sinceMs - b.sinceMs),
     onDidChangeHeldApprovals: heldChanged.event,
-    proposedPlan: (sessionId) => gate.plan(sessionId),
+    proposedPlan: (sessionId) =>
+      modStates.find((s) => s.sessionId === sessionId)?.plan?.markdown ?? gate.plan(sessionId),
+    governor: (sessionId) => (modStates.some((s) => s.sessionId === sessionId) ? 'mod' : 'daemon'),
+    modReview: (sessionId) => modStates.find((s) => s.sessionId === sessionId)?.review,
+    sendToMod: async (sessionId, entry) => {
+      const answer = await sendToMod(modDir(), sessionId, entry);
+      refreshMod();
+      return answer;
+    },
     terminals,
   };
 }

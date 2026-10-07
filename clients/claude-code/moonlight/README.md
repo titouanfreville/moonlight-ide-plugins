@@ -8,9 +8,39 @@ A Claude Code plugin of function hooks that brings MoonlightCode into the sessio
 
 Design and test evidence: [`.bmad-output/spike-1-mod-findings.md`](../../../.bmad-output/spike-1-mod-findings.md).
 
-## Load it
+## Install it
 
-Function hooks are early access: the variable is needed.
+From this repository's marketplace, for every session (function hooks are early access: the variable is needed):
+
+```bash
+claude plugin marketplace add titouanfreville/moonlight-ide-plugins --sparse .claude-plugin clients/claude-code
+claude plugin install moonlightcode@moonlight
+```
+
+and in the `env` block of `~/.claude/settings.json`: `"CLAUDE_CODE_ENABLE_FUNCTION_HOOKS": "1"`.
+
+The MoonlightCode VS Code and JetBrains plugins do both for you: when no daemon can be started, they offer to install it (or run **MoonlightCode: Install the Claude Code Plugin**). They take the repository's marketplace, or the copy bundled in them when GitHub is out of reach. Installed this way, the mod also gates the sessions Anthropic's own Claude Code plugins start, which no launch flag of ours reaches.
+
+## With the daemon
+
+The mod is the fallback, not a second gate. At session start it reads `~/.moonlight/control.json` (`$MOONLIGHT_HOME` when set) and asks the daemon's `/control/gating-status`:
+
+- **The daemon answers with its hooks installed**: it governs, and the mod stands by. No sandbox config, no `/phase`, `/ml-plan`, `present_plan` or `request_phase`: the daemon's own `mcp__moonlight__*` verbs and the IDE panels are the way. The hint under the prompt says `☾ gated by the MoonlightCode daemon`. The Review panel (`/ml-review`) still works.
+- **No answer within 1.5 s, or hooks missing**: the mod governs, as below.
+- While it stands by, the mod still refuses Edit, Write and NotebookEdit on its own files (the mod, `~/.moonlight`, Claude Code's settings).
+- **The daemon stops governing mid-session**: after three missed probes in a row (about 6 s, so a daemon restart flips nothing), the mod takes the session over, in Plan unless another live mod session governs the project (below): the stored phase is not trusted otherwise, since the mod's sandbox did not guard it meanwhile. A toast and a note to the agent say so; `/phase` moves on.
+- A session the mod governs stays the mod's when the daemon comes back: two gates would hold two phases. New sessions go to the daemon.
+- The daemon is checked with `/control/gating-status` at session start (its hooks must be installed), then with the cheaper `/control/health` while it governs, 3 s each.
+- While it stands by, the mod takes its own deny entries out of the project's sandbox (the gate's own files stay denied), so leftovers from an earlier phase never block a session the daemon governs. The mod records what it added per project, so one project's phase change never touches another's lists.
+- A takeover keeps the project's phase when another live session already governs the project with the mod: the phase is the project's, and that session kept it guarded.
+
+## In the IDE
+
+The MoonlightCode VS Code and JetBrains panels show the sessions the mod governs beside the daemon's: their phase, a phase request waiting (Allow / Refuse), the plan to review. Decisions made there reach the mod through files under `~/.moonlight/mod/sessions/<id>/`; see [`../fallback-bridge.md`](../fallback-bridge.md).
+
+## Load it from a checkout
+
+To develop the mod, load the working copy instead:
 
 ```bash
 CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude --plugin-dir ~/path/to/moonlight-ide-plugins/clients/claude-code/moonlight

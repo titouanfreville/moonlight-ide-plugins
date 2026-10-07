@@ -31,6 +31,14 @@ class OpenReviewQueueAction : ReviewAction() {
     }
 }
 
+/** The AI review of the session in front of the operator; the tab offers only plugin sessions. */
+class OpenAiReviewAction : ReviewAction() {
+    override fun actionPerformed(e: AnActionEvent) {
+        val project = e.project ?: return
+        AiReviewTab.show(project, e.getData(MoonlightDataKeys.SESSION_ID) ?: ReviewOps.submitTarget(project))
+    }
+}
+
 class RefreshReviewAction : ReviewAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val state = ReviewState.of(e.project ?: return)

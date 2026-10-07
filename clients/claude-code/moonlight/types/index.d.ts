@@ -62,6 +62,9 @@ declare module 'claude-code' {
   interface PluginState {
     moonlightcode: {
       phase: MoonlightcodePhase
+      // Who governs the session: the daemon (the mod stands by) or the mod;
+      // null until session.start decides.
+      governor: 'mod' | 'daemon' | null
       pending: MoonlightcodePhaseRequest | null
       reviewView: MoonlightcodeReviewView
       reviewFiles: MoonlightcodeChangedFile[]

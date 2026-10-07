@@ -5,6 +5,7 @@ import io.github.titouanfreville.moonlight.client.HookStatusEntry
 import io.github.titouanfreville.moonlight.client.Phase
 import io.github.titouanfreville.moonlight.client.SessionStatus
 import io.github.titouanfreville.moonlight.core.ActiveSession
+import io.github.titouanfreville.moonlight.core.ClaudeModState
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -37,6 +38,32 @@ class GatingViewTest {
         assertTrue(v.warn)
         assertEquals(GatingAction.Refresh, v.action)
         assertTrue(v.tooltip.contains("connection refused"))
+    }
+
+    @Test
+    fun `no daemon but the Claude Code plugin active reads as governed`() {
+        val v = gatingView("connection refused", hooksOn, emptyList(), null, null, folders, ClaudeModState.Active)
+        assertEquals(GatingIcon.Governed, v.icon)
+        assertEquals(GOVERNED_BY_PLUGIN, v.text)
+        assertEquals(false, v.warn)
+    }
+
+    @Test
+    fun `a session the plugin governs shows its phase even with no daemon and no hooks`() {
+        val s = session("s1", phase = Phase.Plan)
+        val v = gatingView("connection refused", emptyList(), listOf(s), ActiveSession("s1", ActiveSession.How.Owned), null, folders, modGoverned = true)
+        assertTrue(v.text.endsWith("· plugin"))
+        assertTrue(v.text.contains("Plan"))
+    }
+
+    @Test
+    fun `no daemon and no Claude Code plugin offers to install it`() {
+        for (state in listOf(ClaudeModState.Missing, ClaudeModState.Off)) {
+            val v = gatingView("connection refused", hooksOn, emptyList(), null, null, folders, state)
+            assertEquals(GatingIcon.NoBackend, v.icon)
+            assertTrue(v.warn)
+            assertEquals(GatingAction.InstallClaudeMod, v.action)
+        }
     }
 
     /** A phase means nothing without hooks to enforce it — the most misleading thing to show. */

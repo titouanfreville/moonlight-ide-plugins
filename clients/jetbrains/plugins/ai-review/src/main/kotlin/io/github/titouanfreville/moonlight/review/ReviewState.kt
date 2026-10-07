@@ -94,7 +94,7 @@ class ReviewState(private val project: Project) {
     fun reload(sessionId: String) {
         ApplicationManager.getApplication().executeOnPooledThread {
             val fresh = try {
-                MoonlightApi.getInstance().control.comments(sessionId)
+                ReviewSource.comments(sessionId)
             } catch (_: Exception) {
                 return@executeOnPooledThread // the backend's state is reported elsewhere
             }

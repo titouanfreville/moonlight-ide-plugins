@@ -18,6 +18,7 @@ import {
   parseSettings,
   projectKey,
   sandboxListsFor,
+  ownedByAnyPhase,
 } from './policy'
 
 test('projectKey encodes a root like Claude Code project folders', () => {
@@ -165,4 +166,9 @@ test('allowWriteBreach finds an allowWrite entry that opens a protected folder',
   expect(allowWriteBreach(['/'], '/home/me', '/p', roots)).toBe('/')
   expect(allowWriteBreach(['./.moonlight/x'], '/home/me', '/p', roots)).toBe('./.moonlight/x')
   expect(allowWriteBreach(['~/.kube', './build', '/tmp'], '/home/me', '/p', roots)).toBeUndefined()
+})
+
+test('ownedByAnyPhase: every entry any phase adds for this root', () => {
+  const owned = ownedByAnyPhase(['.ai'], ['src', '.ai', 'README.md'])
+  expect(owned.denyWrite).toEqual(['./.moonlight', './.claude/settings.json', './.claude/settings.local.json', './src', './README.md', './.ai'])
 })

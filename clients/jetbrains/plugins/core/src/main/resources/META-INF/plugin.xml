@@ -10,7 +10,8 @@
     depends on this one.</p>
     <p>When no daemon is running, it starts one — from the configured path, from
     <code>PATH</code>, or (in released builds) by downloading a hash-pinned
-    <code>moonlightd</code> for your platform.</p>
+    <code>moonlightd</code> for your platform. When none can run, it offers to install the
+    MoonlightCode plugin for Claude Code, which gates each session itself until a daemon runs.</p>
     <p>Settings: <b>Settings ▸ Tools ▸ MoonlightCode</b>.</p>
     ]]></description>
 
@@ -44,5 +45,10 @@
         <!-- Referenced from each tab's toolbar: the way to the other tabs that cannot overflow. -->
         <group id="Moonlight.ToolWindow.OtherTabs"
                class="io.github.titouanfreville.moonlight.core.OtherTabsGroup"/>
+        <!-- The fallback when no daemon runs: the mod, installed into Claude Code itself. -->
+        <action id="Moonlight.InstallClaudeMod"
+                class="io.github.titouanfreville.moonlight.core.InstallClaudeModAction"
+                text="MoonlightCode: Install the Claude Code Plugin (No-Daemon Fallback)"
+                description="Install the moonlightcode plugin into Claude Code, so sessions stay gated while no MoonlightCode daemon runs"/>
     </actions>
 </idea-plugin>

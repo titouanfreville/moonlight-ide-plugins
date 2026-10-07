@@ -64,11 +64,66 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const render = () => {
     renderUsage();
+    // A session the Claude Code mod governs is gated whatever the daemon says: its
+    // hooks are the mod's, not the daemon's, so neither "no backend" nor "hooks
+    // missing" is true of it.
+    const current = core.activeSession();
+    const modSession =
+      current && core.governor?.(current.sessionId) === 'mod'
+        ? core.sessions().find((s) => s.session_id === current.sessionId)
+        : undefined;
+    if (modSession) {
+      const frozen = controlApi.FROZEN_PHASES.includes(modSession.phase);
+      item.text = `${frozen ? '$(lock)' : '$(shield)'} ${modSession.phase} · plugin`;
+      item.backgroundColor = frozen ? new vscode.ThemeColor('statusBarItem.warningBackground') : undefined;
+      item.command = 'moonlight.sessionControl.setPhase';
+      item.tooltip = [
+        `"${modSession.title ?? modSession.session_id}"`,
+        frozen
+          ? `${modSession.phase} — project writes DENIED (AI-workspace dirs stay writable)`
+          : `${modSession.phase} — project writes allowed`,
+        '',
+        'Gated by the MoonlightCode plugin inside Claude Code (no daemon needed).',
+        'Click to change phase.',
+      ].join('\n');
+      item.show();
+      return;
+    }
     const error = core.backendError();
     if (error) {
-      item.text = '$(circle-slash) MoonlightCode';
-      item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-      item.tooltip = `No MoonlightCode backend reachable, so nothing is gated.\n${error}`;
+      // No daemon. The mod for Claude Code may be covering for it (see
+      // moonlight-core/src/claude-mod.ts): then sessions are gated, inside Claude
+      // Code, and the bar must not cry "nothing is gated".
+      const mod = core.claudeMod?.() ?? 'unknown';
+      if (mod === 'active') {
+        item.text = '$(shield) MoonlightCode · plugin';
+        item.backgroundColor = undefined;
+        item.command = undefined;
+        item.tooltip = [
+          'No MoonlightCode daemon is running. Claude Code sessions are gated by the',
+          'MoonlightCode plugin for Claude Code: the phase, the Plan and Review panels are',
+          'in the Claude Code session itself.',
+          'Sessions opened before the plugin was installed are gated once restarted.',
+          '',
+          error,
+        ].join('\n');
+      } else {
+        item.text = '$(circle-slash) MoonlightCode';
+        item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        item.command = core.installClaudeMod ? 'moonlight.core.installClaudeMod' : undefined;
+        item.tooltip = [
+          'No MoonlightCode backend reachable, so nothing is gated.',
+          ...(core.installClaudeMod
+            ? [
+                mod === 'off'
+                  ? 'The MoonlightCode plugin for Claude Code is installed but off: click to turn it on.'
+                  : 'Click to install the MoonlightCode plugin for Claude Code: it gates sessions while no daemon runs.',
+              ]
+            : []),
+          '',
+          error,
+        ].join('\n');
+      }
       item.show();
       return;
     }

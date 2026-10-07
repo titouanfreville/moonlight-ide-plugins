@@ -16,6 +16,11 @@ Cargo.lock.orig
 # Node: dependencies and build output are reproducible from package-lock.json
 node_modules/
 dist/
+# TypeScript output: `npm run compile` rebuilds it, and CI compiles before it tests and packages
+clients/vscode/**/out/
 *.vsix
 /apps/zed_based_desktop
 .ai
+
+# The Claude Code mod copied into the IDE plugins at build time
+clients/vscode/extensions/moonlight-core/claude-mod/

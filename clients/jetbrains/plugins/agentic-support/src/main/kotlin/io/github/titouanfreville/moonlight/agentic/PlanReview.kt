@@ -253,7 +253,7 @@ private class PlanReviewPanel(
         sending = true
         render()
         ApplicationManager.getApplication().executeOnPooledThread {
-            val outcome = decidePlan(core.control, sessionId, plan, notes, verdict)
+            val outcome = decidePlan(core, sessionId, plan, notes, verdict)
             ApplicationManager.getApplication().invokeLater({
                 sending = false
                 when (outcome) {

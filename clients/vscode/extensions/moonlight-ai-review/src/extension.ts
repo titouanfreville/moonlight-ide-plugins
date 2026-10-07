@@ -17,6 +17,9 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as controlApi from 'moonlight-control-client';
 
+import * as source from './review-source';
+import { AiReviewPanel } from './ai-review-view';
+
 import { resolveReviewSession, reviewFilesFromComments } from './target';
 import {
   BaselineProvider,
@@ -34,7 +37,13 @@ export function activate(context: vscode.ExtensionContext): void {
   // every command declared but unregistered, so the palette offers them and each
   // fails with "command not found" and no explanation.
   let cached: Awaited<ReturnType<typeof requireCore>>;
-  const withCore = async () => (cached ??= await requireCore());
+  const withCore = async () => {
+    cached ??= await requireCore();
+    source.setReviewCore(cached);
+    return cached;
+  };
+  // At once: the diff and comment providers route by backend before any command runs.
+  void withCore();
 
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(BASELINE_SCHEME, new BaselineProvider())
@@ -150,7 +159,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     let all: controlApi.ReviewCommentView[];
     try {
-      all = await controlApi.comments(sessionId);
+      all = await source.comments(sessionId);
     } catch {
       return false;
     }
@@ -189,7 +198,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return { pending: 0, resolved: 0 };
     }
     try {
-      const all = await controlApi.comments(reviewTarget);
+      const all = await source.comments(reviewTarget);
       return {
         pending: all.filter((c) => !c.sent && !c.resolved).length,
         resolved: all.filter((c) => c.resolved).length,
@@ -294,7 +303,7 @@ export function activate(context: vscode.ExtensionContext): void {
       let queue: controlApi.ReviewQueueItem[];
       try {
         // Ignored paths are warnings, not files to diff.
-        queue = (await controlApi.reviewQueue({ diffs: false })).filter((i) => !i.ignored);
+        queue = (await source.reviewQueue({ diffs: false })).filter((i) => !i.ignored);
       } catch (err) {
         void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
         return;
@@ -390,6 +399,37 @@ export function activate(context: vscode.ExtensionContext): void {
 
   let panel: vscode.WebviewPanel | undefined;
   context.subscriptions.push(
+    vscode.commands.registerCommand('moonlight.review.openAiReview', async (requested?: string) => {
+      const core = await withCore();
+      if (!core) {
+        return;
+      }
+      // The session the review is about: named, else the review's target or the one
+      // in front of the operator when the plugin governs it, else the only such one.
+      const modSessions = core.sessions().filter((s) => source.isModSession(s.session_id));
+      const candidates = [requested, reviewTarget, core.activeSession()?.sessionId];
+      let sessionId = candidates.find((id): id is string => !!id && source.isModSession(id));
+      if (!sessionId && modSessions.length === 1) {
+        sessionId = modSessions[0].session_id;
+      }
+      if (!sessionId && modSessions.length > 1) {
+        const picked = await vscode.window.showQuickPick(
+          modSessions.map((s) => ({ label: controlApi.sessionLabel(s, core.sessions()), detail: s.root ?? undefined, id: s.session_id })),
+          { placeHolder: 'AI review of which session?' }
+        );
+        sessionId = picked?.id;
+      }
+      if (!sessionId) {
+        void vscode.window.showInformationMessage(
+          modSessions.length === 0
+            ? 'MoonlightCode: AI review runs in sessions the MoonlightCode plugin for Claude Code governs, and none is running.'
+            : 'MoonlightCode: no session picked.'
+        );
+        return;
+      }
+      AiReviewPanel.show(core, sessionId);
+    }),
+
     vscode.commands.registerCommand('moonlight.review.openQueue', async () => {
       const core = await withCore();
       if (!core) {
@@ -414,13 +454,13 @@ export function activate(context: vscode.ExtensionContext): void {
         try {
           switch (message.type) {
             case 'accept':
-              await controlApi.accept(message.sessionId, message.path);
+              await source.accept(message.sessionId, message.path);
               break;
             case 'reject': {
               // Reject drops the file from the queue and steers the session. Only the
               // first is guaranteed, so report the second rather than letting the
               // operator assume their feedback landed.
-              const outcome = await controlApi.reject(
+              const outcome = await source.reject(
                 message.sessionId,
                 message.path,
                 message.text
@@ -451,7 +491,7 @@ export function activate(context: vscode.ExtensionContext): void {
               }
               reviewTarget = message.sessionId;
               const item = (
-                await controlApi.reviewQueue({
+                await source.reviewQueue({
                   session: message.sessionId,
                   path: message.path,
                   diffs: false,
@@ -464,8 +504,11 @@ export function activate(context: vscode.ExtensionContext): void {
               return;
             }
             case 'ignore':
-              await controlApi.setIgnored(message.sessionId, message.path, true);
+              await source.setIgnored(message.sessionId, message.path, true);
               break;
+            case 'aiReview':
+              await vscode.commands.executeCommand('moonlight.review.openAiReview', message.sessionId);
+              return;
             case 'refresh':
               break;
             default:
@@ -499,6 +542,7 @@ type WebviewMessage =
   | { type: 'reject'; sessionId: string; path: string; text: string }
   | { type: 'open'; sessionId: string; path: string }
   | { type: 'ignore'; sessionId: string; path: string }
+  | { type: 'aiReview'; sessionId: string }
   | { type: 'refresh' };
 
 /**
@@ -516,7 +560,7 @@ async function submitReview(
 ): Promise<void> {
   let outcome: controlApi.SubmitReviewResponse | undefined;
   try {
-    outcome = await controlApi.submitReview(sessionId);
+    outcome = await source.submitReview(sessionId);
   } catch (err) {
     void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
     return;
@@ -552,7 +596,7 @@ async function submitReview(
 
   if (isConfirmed(delivery)) {
     try {
-      await controlApi.markDelivered(sessionId, outcome.comment_ids);
+      await source.markDelivered(sessionId, outcome.comment_ids);
     } catch {
       void vscode.window.showWarningMessage(
         `Review sent to ${delivery.detail}, but MoonlightCode could not record it as delivered — it may be offered again.`
@@ -574,7 +618,7 @@ async function renderQueue(panel: vscode.WebviewPanel): Promise<void> {
   let items: controlApi.ReviewQueueItem[] = [];
   let error: string | undefined;
   try {
-    items = await controlApi.reviewQueue({ diffs: false });
+    items = await source.reviewQueue({ diffs: false });
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
   }
@@ -602,6 +646,19 @@ function cspNonce(): string {
 
 function renderHtml(items: controlApi.ReviewQueueItem[], error: string | undefined): string {
   const nonce = cspNonce();
+  // The AI review runs in sessions the Claude Code plugin governs: one button each.
+  const modSessions = new Map<string, string>();
+  for (const item of items) {
+    if (source.isModSession(item.session_id)) {
+      modSessions.set(item.session_id, item.session_title ?? item.session_id.slice(0, 8));
+    }
+  }
+  const aiReview = [...modSessions]
+    .map(
+      ([id, title]) =>
+        `<button data-ai-review data-session="${esc(id)}" title="Run a review skill in this session, then triage its findings">AI review${modSessions.size > 1 ? ` — ${esc(title)}` : ''}</button>`
+    )
+    .join(' ');
   const body = error
     ? `<p class="error">${esc(error)}</p>`
     : items.length === 0
@@ -633,7 +690,7 @@ function renderHtml(items: controlApi.ReviewQueueItem[], error: string | undefin
 </style>
 </head>
 <body>
-<h2>Review Queue <button id="refresh">Refresh</button></h2>
+<h2>Review Queue <button id="refresh">Refresh</button> ${aiReview}</h2>
 ${body}
 <script nonce="${nonce}">
   const vscode = acquireVsCodeApi();
@@ -656,6 +713,11 @@ ${body}
         sessionId: el.getAttribute('data-session'),
         path: el.getAttribute('data-path'),
       });
+    });
+  });
+  document.querySelectorAll('[data-ai-review]').forEach((el) => {
+    el.addEventListener('click', () => {
+      vscode.postMessage({ type: 'aiReview', sessionId: el.getAttribute('data-session') });
     });
   });
   document.querySelectorAll('[data-ignore]').forEach((el) => {
@@ -729,7 +791,7 @@ function renderItem(item: controlApi.ReviewQueueItem): string {
   <div>
     <button data-open data-session="${session}" data-path="${filePath}">Open diff &amp; comment</button>
     <button data-accept data-session="${session}" data-path="${filePath}">Mark reviewed</button>
-    <button data-ignore data-session="${session}" data-path="${filePath}">Ignore</button>
+    ${source.isModSession(item.session_id) ? '' : `<button data-ignore data-session="${session}" data-path="${filePath}">Ignore</button>`}
   </div>
   <textarea rows="2" placeholder="Reject this file with feedback (sent to the session now)"></textarea>
   <div>

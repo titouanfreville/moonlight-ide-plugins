@@ -16,6 +16,7 @@ import * as controlApi from 'moonlight-control-client';
 import type { DiscoverableSession } from 'moonlight-control-client';
 import type { MoonlightApi } from 'moonlight-core';
 
+import { advanceSessionPhase, setSessionPhase } from './phase-route';
 import { requireCore } from './core';
 import { sessionsToAdopt, staleAttempts } from './auto-adopt';
 import { nodeSession, PHASES, SessionDecorations, SessionsProvider } from './sessions-view';
@@ -134,7 +135,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       try {
-        await controlApi.setPhase(pickedSession.session.session_id, pickedPhase.label);
+        await setSessionPhase(core, pickedSession.session.session_id, pickedPhase.label);
         await core.refresh();
         void vscode.window.showInformationMessage(
           `"${pickedSession.label}" → ${pickedPhase.label}. The phase is now pinned (a manual pick overrides auto-advance).`
@@ -615,7 +616,7 @@ async function registerSessionsView(
         return;
       }
       try {
-        await controlApi.setPhase(session.session_id, picked.label);
+        await setSessionPhase(core, session.session_id, picked.label);
         await core.refresh();
         void vscode.window.showInformationMessage(
           `${controlApi.shortId(session.session_id)} → ${picked.label}. The phase is pinned now: a manual pick overrides auto-advance.`
@@ -631,7 +632,7 @@ async function registerSessionsView(
         return;
       }
       try {
-        await controlApi.advancePhase(session.session_id);
+        await advanceSessionPhase(core, session);
         await core.refresh();
       } catch (err) {
         void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
