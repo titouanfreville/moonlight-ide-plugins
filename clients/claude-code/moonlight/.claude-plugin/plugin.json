@@ -1,6 +1,6 @@
 {
   "name": "moonlightcode",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "MoonlightCode for Claude Code: workflow phases, with Plan as a read-only boundary while Claude Code runs in auto mode",
   "author": {
     "name": "Titouan Freville",
@@ -13,6 +13,12 @@
       "title": "Review skills",
       "description": "The review skills the Review panel offers to run, comma-separated (bare, or plugin:name). Only the installed ones are offered. A team sets its own here, e.g. through managed settings.",
       "default": "bmad-code-review, code-review"
+    },
+    "colorBlind": {
+      "type": "boolean",
+      "title": "Colour-blind mode",
+      "description": "Draw phases and change counts in the Okabe–Ito colours, which stay distinct for red-green and blue-yellow colour blindness. Phases keep their own symbols and severities their marks in every mode.",
+      "default": false
     }
   }
 }

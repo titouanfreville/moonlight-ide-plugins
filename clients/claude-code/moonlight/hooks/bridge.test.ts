@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { answer, parseInboxEntry, pendingEntries } from './bridge'
+import { answer, parseInboxEntry, pendingEntries, sessionTitleFrom, titleFromTranscript } from './bridge'
 
 test('parseInboxEntry: the three decisions', () => {
   expect(parseInboxEntry('{"v":1,"kind":"phase","to":"auto"}')).toEqual({ kind: 'phase', to: 'auto' })
@@ -74,4 +74,22 @@ test('parseInboxEntry: review decisions that would climb or guess are refused', 
     '{"v":1,"kind":"review-scope","scope":"all"}',
   ])
     expect('error' in (parseInboxEntry(raw) as object)).toBe(true)
+})
+
+test('sessionTitleFrom: Claude Code\'s title first, else the first prompt line', () => {
+  expect(sessionTitleFrom('  Fix the queue  ', undefined, null)).toBe('Fix the queue')
+  expect(sessionTitleFrom('Renamed', 'anything', 'Old name')).toBe('Renamed')
+  expect(sessionTitleFrom(undefined, '\n  Add Jira to plan\nmore', null)).toBe('Add Jira to plan')
+  expect(sessionTitleFrom(undefined, 'a later prompt', 'Kept')).toBe('Kept')
+  expect(sessionTitleFrom(undefined, '/phase auto', null)).toBe(null)
+  expect(sessionTitleFrom(undefined, '[moonlight] Plan v1 APPROVED', null)).toBe(null)
+  expect(sessionTitleFrom(undefined, 'x'.repeat(100), null)).toBe(`${'x'.repeat(79)}…`)
+})
+
+test('titleFromTranscript: the operator\'s rename wins, the latest of each counts', () => {
+  const ai = (t: string) => JSON.stringify({ type: 'ai-title', aiTitle: t })
+  const custom = (t: string) => JSON.stringify({ type: 'custom-title', customTitle: t })
+  expect(titleFromTranscript('')).toBe(undefined)
+  expect(titleFromTranscript([ai('First'), ai('Plan panel for the mod')].join('\n'))).toBe('Plan panel for the mod')
+  expect(titleFromTranscript([custom('Bedrock AWS'), ai('JIRA MCP availability'), '{"cut'].join('\n'))).toBe('Bedrock AWS')
 })

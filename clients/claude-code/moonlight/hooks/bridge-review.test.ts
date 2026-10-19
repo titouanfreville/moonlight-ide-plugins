@@ -42,9 +42,12 @@ test('Bridge: the review for the IDE, and its decisions', async ($, on) => {
   expect(await send('4-finding', { kind: 'finding', id: 'H1-1-0', decision: 'dismiss' })).toMatchObject({ ok: false })
   expect(await send('5-run', { kind: 'review-run', skill: 'not-installed' })).toMatchObject({ ok: false })
 
-  // Mark the file reviewed: its baseline and its comments go.
-  expect(await send('6-accept', { kind: 'review-accept-file', path: 'src/a.ts' })).toMatchObject({ ok: true })
-  expect(JSON.parse(world.files[`${dir}/baseline/index.json`]!)).toEqual({})
+  // Not while its comment is unsent: the operator's words are never dropped unasked.
+  expect(await send('6-accept', { kind: 'review-accept-file', path: 'src/a.ts' })).toMatchObject({ ok: false })
+  expect(await send('6b-uncomment', { kind: 'review-uncomment', id: added.message })).toMatchObject({ ok: true })
+  // Mark the file reviewed: it is kept as it is now.
+  expect(await send('6c-accept', { kind: 'review-accept-file', path: 'src/a.ts' })).toMatchObject({ ok: true })
+  expect(Object.values(JSON.parse(world.files[`${dir}/baseline/index.json`]!) as Record<string, { kind: string }>)).toMatchObject([{ kind: 'copy' }])
   await clock.advance(2000)
   expect(review()).toMatchObject({ files: [], comments: [] })
 

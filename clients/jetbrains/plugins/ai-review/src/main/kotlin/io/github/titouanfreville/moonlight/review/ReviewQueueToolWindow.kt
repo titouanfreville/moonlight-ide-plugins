@@ -115,8 +115,12 @@ private class QueuePanel(private val project: Project, private val toolWindow: T
         toolTipText = "Which session's changes this tab reviews — Send review goes to it"
     }
 
-    /** What the operator picked; [Scope.Active] until they pick something else. */
+    /**
+     * What the operator picked; [Scope.Active] until they pick something else — here, or a
+     * governed session in the Sessions tab, which this tab then opens on.
+     */
     private var scope: Scope = Scope.Active
+    private val selection = SessionsSelection(project)
 
     /** Set while the selector is rebuilt, so rebuilding is not read as a pick. */
     private var rebuilding = false
@@ -170,6 +174,8 @@ private class QueuePanel(private val project: Project, private val toolWindow: T
             // The active session can change without the queue changing; re-slice either way.
             override fun sessionsChanged() = reload()
         })
+        // Opening the tab catches up with a session picked in Sessions since the last poll.
+        whenTabShown(toolWindow, this, this) { render() }
         reload()
     }
 
@@ -212,6 +218,9 @@ private class QueuePanel(private val project: Project, private val toolWindow: T
     }
 
     private fun render() {
+        // A governed session picked in Sessions becomes what this tab reviews; an ungoverned
+        // one has no queue, so the tab stays where it was.
+        selection.fresh { id -> core.sessions().any { it.sessionId == id && it.adopted } }?.let { scope = Scope.Session(it) }
         val session = resolved()
         rebuildSelector()
         val shown = when {
@@ -253,7 +262,19 @@ private class QueuePanel(private val project: Project, private val toolWindow: T
             ids.forEach { add(ScopeChoice(Scope.Session(it), counted(it))) }
             add(ScopeChoice(Scope.All, "All sessions (${counts.values.sum()})"))
         }
-        if (choices == (0 until scopes.size).map(scopes::getElementAt)) return
+        if (choices == (0 until scopes.size).map(scopes::getElementAt)) {
+            // Same choices, but the scope may have moved under them (a Sessions pick): show it.
+            val current = choices.firstOrNull { it.scope == scope }
+            if (current != null && selector.selectedItem != current) {
+                rebuilding = true
+                try {
+                    selector.selectedItem = current
+                } finally {
+                    rebuilding = false
+                }
+            }
+            return
+        }
         rebuilding = true
         try {
             scopes.removeAllElements()

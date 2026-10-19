@@ -51,7 +51,8 @@ import {
   type PlanLine,
   type PlanVerdict,
 } from './plan'
-import { answer, BRIDGE_VERSION, type InboxEntry, parseInboxEntry, pendingEntries, type ReviewEntry } from './bridge'
+import { countColors, isColorBlindOption, PHASE_GLYPH, phaseBadge, phaseColor, severityLabel } from './palette'
+import { answer, BRIDGE_VERSION, type InboxEntry, parseInboxEntry, pendingEntries, type ReviewEntry, sessionTitleFrom, titleFromTranscript } from './bridge'
 import { controlUrl, countMisses, discoveryFile, type Governor, hooksInstalled, isHealthy, nextGovernor } from './daemon'
 import {
   allowWriteBreach,
@@ -63,6 +64,7 @@ import {
   allowsWrites,
   DEFAULT_WRITABLE,
   isAllowedInPlan,
+  writesGateFiles,
   nextPhase,
   notesFor,
   phaseFromToken,
@@ -142,15 +144,37 @@ let protectedRoots: string[] = []
 const phaseState = atom({ plugin: 'moonlightcode', key: 'phase' } as const, 'plan' as Phase)
 
 // Each phase's badge and colour, on the hint line, the pane and the status.
-const PHASE_STYLE: Record<Phase, { badge: string; color: string }> = {
-  plan: { badge: ' ◐ PLAN ', color: 'yellow' },
-  auto: { badge: ' ● AUTO ', color: 'green' },
-  test: { badge: ' ● TEST ', color: 'cyan' },
-  review: { badge: ' ● REVIEW ', color: 'blue' },
-  commit: { badge: ' ■ COMMIT ', color: 'red' },
-}
+// The colour-blind mode (the `colorBlind` option): Okabe–Ito colours. The
+// symbols and marks that carry each meaning stay in every mode (palette.ts).
+let isColorBlind = false
+
+const phaseStyle = (phase: Phase): { badge: string; color: string } => ({
+  badge: phaseBadge(phase),
+  color: phaseColor(phase, isColorBlind),
+})
 const governorState = atom({ plugin: 'moonlightcode', key: 'governor' } as const, null as Governor | null)
 const pendingState = atom({ plugin: 'moonlightcode', key: 'pending' } as const, null)
+const mcpAllowedState = atom({ plugin: 'moonlightcode', key: 'mcpAllowed' } as const, [] as string[])
+const sessionTitleState = atom({ plugin: 'moonlightcode', key: 'sessionTitle' } as const, null as string | null)
+
+const MCP_ALLOW_ONCE = 'Allow once'
+const MCP_ALLOW_SESSION = 'Allow for this session'
+const MCP_DENY = 'Deny'
+
+// An MCP tool a read-only phase does not list: the operator decides, since only
+// they know what that server does. Their answer, a refusal when the dialog is
+// dismissed or there is no one to ask (a -p run).
+const askForMcpTool = async ($: $, tool: string, label: string): Promise<{ allowed: boolean; said: string }> => {
+  if ((await read($, mcpAllowedState)).includes(tool)) return { allowed: true, said: MCP_ALLOW_SESSION }
+  const said = await $.ui
+    .ask(`Moonlight (${label}) is read-only, and ${tool} is not on its read-only list. Let it run?`, {
+      header: 'MCP tool',
+      options: [MCP_ALLOW_ONCE, MCP_ALLOW_SESSION, MCP_DENY],
+    })
+    .catch(() => MCP_DENY)
+  if (said === MCP_ALLOW_SESSION) await update($, mcpAllowedState, list => [...(list ?? []), tool])
+  return { allowed: said === MCP_ALLOW_ONCE || said === MCP_ALLOW_SESSION, said }
+}
 
 let pending: MoonlightcodePhaseRequest | undefined
 
@@ -237,7 +261,13 @@ const ownedKey = (projectRoot: string): string => `${OWNED_KEY}:${projectKey(pro
 // Puts the mod's lists for this project in its settings, replacing what the mod
 // added last time and keeping the user's own entries. With no record for the
 // project, whatever a phase would have added here counts as the mod's.
-const writeSandboxLists = async ($: $, projectRoot: string, owned: (entries: string[]) => SandboxWriteLists): Promise<SandboxWriteLists> => {
+// `isOff`: shell commands run outside the sandbox (the writable phases).
+const writeSandboxLists = async (
+  $: $,
+  projectRoot: string,
+  owned: (entries: string[]) => SandboxWriteLists,
+  isOff = false,
+): Promise<SandboxWriteLists> => {
   const path = settingsPath(projectRoot)
   const text = await $.fs.read(path).catch(() => '{}')
   const parsed = parseSettings(text)
@@ -248,8 +278,8 @@ const writeSandboxLists = async ($: $, projectRoot: string, owned: (entries: str
   }
   const settings = parsed.settings
   const sandbox = (settings.sandbox ??= {})
-  sandbox.enabled = true
-  sandbox.allowUnsandboxedCommands = false
+  sandbox.enabled = !isOff
+  sandbox.allowUnsandboxedCommands = isOff
   const filesystem = (sandbox.filesystem ??= {})
   const entries = await listRoot($, projectRoot)
   const recorded = (await $.store.get(ownedKey(projectRoot))) as SandboxWriteLists | undefined
@@ -265,7 +295,10 @@ const writeSandboxLists = async ($: $, projectRoot: string, owned: (entries: str
 
 const applySandbox = async ($: $, phase: Phase): Promise<void> => {
   if (root === undefined) return
-  const owned = await writeSandboxLists($, root, entries => sandboxListsFor(phase, DEFAULT_WRITABLE, entries))
+  // The writable phases run shell commands outside the sandbox: gh, nx and the
+  // like need the network, sockets and folders outside the project, and the
+  // phase already lets the agent write. Plan and Commit keep it.
+  const owned = await writeSandboxLists($, root, entries => sandboxListsFor(phase, DEFAULT_WRITABLE, entries), allowsWrites(phase))
   deniedEntries = owned.denyWrite
   appliedPhase = phase
   await update($, phaseState, () => phase)
@@ -273,7 +306,7 @@ const applySandbox = async ($: $, phase: Phase): Promise<void> => {
   // only where it does not (the VS Code extension today), never both.
   const surfaces = await $.session.surfaces().catch(() => [] as string[])
   if (surfaces.some(s => SURFACES_WITHOUT_BAND.includes(s)))
-    $.ui.status(`Moonlight: ${PHASE_STYLE[phase].badge.trim()} (${phaseRule(phase)})`)
+    $.ui.status(`Moonlight: ${phaseStyle(phase).badge.trim()} (${phaseRule(phase)})`)
 }
 
 const syncPhase = async ($: $): Promise<Phase> => {
@@ -451,6 +484,17 @@ const guardWrite = async ($: $, path: string): Promise<{ deny: string } | undefi
 // Why a shell command must not run now, if it must not: the sandbox is not
 // safe, an allowWrite opens the gate's own files, or the deny list this mod
 // applied is not the one the engine runs under (fail closed).
+// Outside the sandbox, the gate's own files (the phase, the project settings)
+// are kept out of reach by reading the command: a write to them is refused.
+const gateFilesRefusal = (command: string, tool: string, phase: Phase): { deny: string } | undefined =>
+  writesGateFiles(command)
+    ? {
+        deny:
+          `Moonlight (${phaseLabel(phase)}): ${tool} refused, it would write the gate's own files ` +
+          '(.moonlight, .claude/settings). Only the operator changes the phase and the settings.',
+      }
+    : undefined
+
 const shellRefusal = async ($: $, tool: string, phase: Phase): Promise<{ deny: string } | undefined> => {
   const settings = await $.settings.read()
   const health = checkSandbox(settings)
@@ -513,8 +557,39 @@ const tick = async ($: $): Promise<void> => {
   if (governor === 'mod') {
     await applyInbox($)
     await refreshReview($)
+    await refreshTitle($)
     await publishState($)
   }
+}
+
+// The session's name, from its transcript every TITLE_REFRESH_TICKS ticks (and
+// at the first): Claude Code names a session after a turn or two, and the
+// operator may rename it at any time. Not left to the classic hooks: they do
+// not reach every session.
+const TITLE_REFRESH_TICKS = 15
+let titleTicks = 0
+let transcriptPath: string | undefined
+
+const refreshTitle = async ($: $): Promise<void> => {
+  titleTicks += 1
+  if (titleTicks % TITLE_REFRESH_TICKS !== 1) return
+  const path = await findTranscript($).catch(() => undefined)
+  if (path !== undefined) await noteTitle($, undefined, path).catch(() => undefined)
+}
+
+// Where Claude Code keeps this session's transcript: under its project folder,
+// named after the session; searched for once when the launch folder differs
+// from the root.
+const findTranscript = async ($: $): Promise<string | undefined> => {
+  if (transcriptPath !== undefined) return transcriptPath
+  const id = await $.session.id()
+  if (home === undefined || !SESSION_ID.test(id)) return undefined
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`
+  const guess = root === undefined ? undefined : `${config}/projects/${projectKey(root)}/${id}.jsonl`
+  if (guess !== undefined && (await $.fs.exists(guess))) return (transcriptPath = guess)
+  const found = await $.process.run(['find', `${config}/projects`, '-maxdepth', '2', '-name', `${id}.jsonl`])
+  const first = found.stdout.split('\n').find(line => line.trim() !== '')
+  return first === undefined ? undefined : (transcriptPath = first.trim())
 }
 
 // The review the IDE shows: recomputed when a baseline was taken or a decision
@@ -557,6 +632,7 @@ const publishState = async ($: $): Promise<void> => {
     sessionId: at.id,
     root: root ?? null,
     phase: await read($, phaseState),
+    title: await read($, sessionTitleState),
     pending: pending === undefined ? null : { to: pending.to, reason: pending.reason },
     plan: doc === null ? null : doc,
     review: await reviewForIde($),
@@ -565,6 +641,25 @@ const publishState = async ($: $): Promise<void> => {
   if (key === publishedState) return
   await $.fs.write(`${at.dir}/state.json`, `${JSON.stringify({ ...state, updatedMs: await $.clock.now() })}\n`)
   publishedState = key
+}
+
+// The session's name, as the IDE panels list it: Claude Code's own title once it
+// has one; until then the first line of the operator's first prompt, which is
+// what the title is made from anyway.
+// `transcript`: where Claude Code keeps the name it shows (the operator's rename,
+// else the one it generated); read with grep, since a transcript runs to megabytes.
+const noteTitle = async ($: $, title: string | undefined, transcript: string | undefined, prompt?: string): Promise<void> => {
+  let given = title?.trim() || undefined
+  if (given === undefined && transcript !== undefined && transcript !== '') {
+    const found = await $.process
+      .run(['grep', '-h', '-E', '"type":"(custom-title|ai-title)"', '--', transcript])
+      .catch(() => undefined)
+    given = found === undefined ? undefined : titleFromTranscript(found.stdout)
+  }
+  const named = sessionTitleFrom(given, prompt, await read($, sessionTitleState))
+  if (named === (await read($, sessionTitleState))) return
+  await update($, sessionTitleState, () => named)
+  await publishState($)
 }
 
 const reviewForIde = async ($: $) => {
@@ -849,6 +944,17 @@ const readBaselineIndex = async ($: $): Promise<BaselineIndex> => {
 // Called before an Edit, Write or NotebookEdit runs; only the first change of
 // a file is kept. A failure here never blocks the tool: that file then shows
 // against HEAD.
+// The file as it is now, as a baseline: a copy, `absent` when it does not
+// exist, or why it was not copied.
+const snapshotOf = async ($: $, dir: string, absolute: string): Promise<BaselineEntry> => {
+  if (!(await $.fs.exists(absolute))) return { kind: 'absent' }
+  const kept = baselineOf(await $.fs.read(absolute))
+  if ('reason' in kept) return { kind: 'skipped', reason: kept.reason }
+  const blob = `${dir}/blobs/${contentHash(kept.text)}`
+  if (!(await $.fs.exists(blob))) await $.fs.write(blob, kept.text)
+  return { kind: 'copy', blob }
+}
+
 const captureBaseline = async ($: $, path: string | undefined): Promise<void> => {
   try {
     const dir = await baselineDir($)
@@ -859,17 +965,7 @@ const captureBaseline = async ($: $, path: string | undefined): Promise<void> =>
     const absolute = (await $.fs.exists(given)) ? ((await realPathOf($, given)) ?? given) : given
     const index = await readBaselineIndex($)
     if (index[absolute] !== undefined) return
-    let entry: BaselineEntry
-    if (!(await $.fs.exists(absolute))) entry = { kind: 'absent' }
-    else {
-      const kept = baselineOf(await $.fs.read(absolute))
-      if ('reason' in kept) entry = { kind: 'skipped', reason: kept.reason }
-      else {
-        const blob = `${dir}/blobs/${contentHash(kept.text)}`
-        if (!(await $.fs.exists(blob))) await $.fs.write(blob, kept.text)
-        entry = { kind: 'copy', blob }
-      }
-    }
+    const entry = await snapshotOf($, dir, absolute)
     await $.fs.write(`${dir}/index.json`, JSON.stringify({ ...index, [absolute]: entry }))
     reviewDirty = true
   } catch (error) {
@@ -1066,8 +1162,24 @@ const removeReviewComment = async ($: $, id: string): Promise<void> => {
   await update($, reviewCommentsState, list => (list ?? []).filter(c => c.id !== id))
 }
 
-// Closes the review: drops the baselines, so the next one shows only what the
-// agent changes from here; stays on this session's changes, not HEAD's.
+// Every file under review, reviewed as it is now.
+const rebaseAll = async ($: $): Promise<void> => {
+  const dir = await baselineDir($)
+  if (dir === undefined) return
+  const index = await readBaselineIndex($)
+  const next: BaselineIndex = {}
+  for (const [absolute, entry] of Object.entries(index)) {
+    // A file that could not be copied stays listed whatever happens: forgotten.
+    if (entry.kind === 'skipped') continue
+    const now = await snapshotOf($, dir, absolute)
+    if (now.kind !== 'skipped') next[absolute] = now
+  }
+  await $.fs.write(`${dir}/index.json`, JSON.stringify(next))
+}
+
+// Closes the review: every file's baseline becomes its current content, so the
+// next review shows only what the agent changes from here, by any tool; stays
+// on this session's changes, not HEAD's.
 const acceptReview = async ($: $): Promise<string> => {
   const comments = await read($, reviewCommentsState)
   const kept = (await read($, reviewFindingsState)).filter(f => f.decision === 'keep')
@@ -1082,7 +1194,7 @@ const acceptReview = async ($: $): Promise<string> => {
   }
   await update($, reviewFindingsState, () => [])
   await update($, reviewFindingsStatusState, () => null)
-  await dropBaseline($)
+  await rebaseAll($)
   await update($, reviewScopeState, () => 'session')
   await clearSelection($)
   await update($, reviewDraftState, () => [])
@@ -1108,14 +1220,22 @@ const acceptReview = async ($: $): Promise<string> => {
 const acceptReviewFile = async ($: $, path: string): Promise<{ ok: boolean; message: string }> => {
   const file = (await read($, reviewFilesState)).find(f => f.path === path)
   if (file === undefined) return { ok: false, message: `${path} is not among the files under review.` }
+  // Its comments are the operator's words, not yet sent: never dropped unasked.
+  const waiting = (await read($, reviewCommentsState)).filter(c => c.path === path).length
+  if (waiting > 0)
+    return { ok: false, message: `${path} has ${counted(waiting, 'comment')} not sent yet: send the review, or remove them first.` }
   const dir = await baselineDir($)
   const absolute = `${file.repo}/${file.repoPath}`
   const index = await readBaselineIndex($)
   if (dir === undefined || index[absolute] === undefined)
     return { ok: false, message: `${path} is reviewed against the last commit: commit it, or accept the whole review.` }
+  // Reviewed as it is now: it leaves the list, and comes back with the next
+  // change, whichever tool makes it (a shell script included, which no write
+  // hook sees). Forgetting the file instead would lose those for good.
+  // A file that cannot be copied would stay listed whatever happens: forgotten.
   const { [absolute]: _accepted, ...rest } = index
-  await $.fs.write(`${dir}/index.json`, JSON.stringify(rest))
-  await update($, reviewCommentsState, list => (list ?? []).filter(c => c.path !== path))
+  const now = await snapshotOf($, dir, absolute)
+  await $.fs.write(`${dir}/index.json`, JSON.stringify(now.kind === 'skipped' ? rest : { ...rest, [absolute]: now }))
   await loadChangedFiles($)
   return { ok: true, message: `${path} marked reviewed.` }
 }
@@ -1595,6 +1715,23 @@ const startReview = async ($: $): Promise<void> => {
 
 export const register: Register = (on, options) => {
   configuredSkills = parseSkillList((options as Record<string, unknown> | undefined)?.reviewSkills) ?? [...DEFAULT_ATTACHED]
+  isColorBlind = isColorBlindOption((options as Record<string, unknown> | undefined)?.colorBlind)
+
+  on('classic.SessionStart', async ($, e, next) => {
+    await noteTitle($, e.session_title, e.transcript_path).catch(() => undefined)
+    return next(e)
+  })
+  // The operator's prompts only: an IDE's Claude Code panel submits as `sdk`.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    const isOperator = e.source === undefined || e.source === 'user' || e.source === 'sdk'
+    await noteTitle($, e.session_title, e.transcript_path, isOperator ? e.prompt : undefined).catch(() => undefined)
+    return next(e)
+  })
+  // Claude Code names the session after a turn or two; a turn's end picks it up.
+  on('classic.Stop', async ($, e, next) => {
+    await noteTitle($, undefined, e.transcript_path).catch(() => undefined)
+    return next(e)
+  })
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -1750,8 +1887,8 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" paddingLeft={withPlace ? 0 : 2}>
           {/* Short items on the first row (a button does not shrink); the summary wraps on its own line. */}
           <Box flexDirection="row">
-            {/* Severity as a word: red and yellow belong to the phases. */}
-            <Text bold={f.severity === 'high'} dimColor={isDismissed || f.severity === 'low'}>{`🤖 ${f.severity}  `}</Text>
+            {/* Severity as a mark and a word: red and yellow belong to the phases. */}
+            <Text bold={f.severity === 'high'} dimColor={isDismissed || f.severity === 'low'}>{`🤖 ${severityLabel(f.severity)}  `}</Text>
             {withPlace && (
               <Button key={`goto:${f.id}`} plain dimColor={isDismissed} label={findingPlace(f.file, f.line)} onPress={() => void openReviewFile($, f.file)} />
             )}
@@ -1856,8 +1993,8 @@ export const register: Register = (on, options) => {
                     <Text dimColor>{`  no diff: ${file.skipped}`}</Text>
                   ) : (
                     <Box flexDirection="row">
-                      <Text color="green">{`  +${file.added}`}</Text>
-                      <Text color="red">{` -${file.removed}`}</Text>
+                      <Text color={countColors(isColorBlind).added}>{`  +${file.added}`}</Text>
+                      <Text color={countColors(isColorBlind).removed}>{` -${file.removed}`}</Text>
                     </Box>
                   )}
                   {count > 0 && <Text>{`  💬 ${count}`}</Text>}
@@ -2334,7 +2471,7 @@ export const register: Register = (on, options) => {
         </Box>
       )
     const phase = await read($, phaseState)
-    const style = PHASE_STYLE[phase]
+    const style = phaseStyle(phase)
     const next = nextPhase(phase)
     return (
       <Box flexDirection="row">
@@ -2355,7 +2492,7 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     return (
       <Box flexDirection="row">
-        <Text bold color="black" backgroundColor={PHASE_STYLE[request.to].color}>{` ? ${request.to.toUpperCase()} `}</Text>
+        <Text bold color="black" backgroundColor={phaseStyle(request.to).color}>{` ? ${PHASE_GLYPH[request.to]} ${request.to.toUpperCase()} `}</Text>
         <Text>{`  The agent asks to move to ${request.to} (${phaseRule(request.to)})${request.reason !== '' ? `: ${request.reason}` : ''}  `}</Text>
         <Button key="band-approve" label="Approve" hotkey="y" variant="primary" onPress={() => void decide($, true)} />
         <Text> </Text>
@@ -2369,7 +2506,7 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const phase = await read($, phaseState)
     const request = await read($, pendingState)
-    const style = PHASE_STYLE[phase]
+    const style = phaseStyle(phase)
     return (
       <Box flexDirection="column">
         <Box flexDirection="row">
@@ -2422,6 +2559,17 @@ export const register: Register = (on, options) => {
             ? 'Present the plan with mcp__moonlightcode__present_plan instead, then wait for the verdict.'
             : 'Ask for the plan phase with request_phase if a plan is needed.'),
       }
+    // An MCP tool is the operator's call rather than a hard refusal.
+    if (e.tool.startsWith('mcp__')) {
+      const { allowed, said } = await askForMcpTool($, e.tool, label)
+      if (allowed) return next(e)
+      return {
+        deny:
+          `Moonlight (${label}): the operator did not allow ${e.tool}` +
+          (said === MCP_DENY ? '.' : `: "${said}".`) +
+          ' Carry on without it, or ask for a writable phase with request_phase.',
+      }
+    }
     return {
       deny:
         `Moonlight (${label}): ${e.tool} is not on the read-only allow-list. ${label} only runs read-only tools ` +
@@ -2435,6 +2583,9 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     if (governor === 'daemon') return next(e)
     const phase = await syncPhase($)
+    // A writable phase runs it outside the sandbox; only the gate's own files
+    // stay out of reach, on the command's own words (best effort).
+    if (allowsWrites(phase)) return gateFilesRefusal(e.command, 'Bash', phase) ?? next(e)
     const refused = await shellRefusal($, 'Bash', phase)
     if (refused !== undefined) return refused
     return afterShell($, phase, await next(e.dangerouslyDisableSandbox === true ? { ...e, dangerouslyDisableSandbox: false } : e))
@@ -2442,8 +2593,10 @@ export const register: Register = (on, options) => {
   // Monitor runs its script in Bash's shell and sandbox. A WebSocket monitor
   // (`ws`, no `command`) runs nothing.
   on('tool.call', { tool: 'Monitor' }, async ($, e, next) => {
-    if (governor === 'daemon' || (e as unknown as { command?: unknown }).command === undefined) return next(e)
+    const command = (e as unknown as { command?: unknown }).command
+    if (governor === 'daemon' || command === undefined) return next(e)
     const phase = await syncPhase($)
+    if (allowsWrites(phase)) return gateFilesRefusal(String(command), 'Monitor', phase) ?? next(e)
     const refused = await shellRefusal($, 'Monitor', phase)
     if (refused !== undefined) return refused
     return afterShell($, phase, await next(e))

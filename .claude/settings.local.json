@@ -1,0 +1,44 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "filesystem": {
+      "denyWrite": [
+        "./.moonlight",
+        "./.claude/settings.json",
+        "./.claude/settings.local.json",
+        "./_bmad",
+        "./.claude",
+        "./.claude-plugin",
+        "./.git",
+        "./.github",
+        "./.gitignore",
+        "./.idea",
+        "./.rtk",
+        "./.trunk",
+        "./AGENTS.md",
+        "./apps",
+        "./Cargo.lock",
+        "./Cargo.toml",
+        "./CLAUDE.md",
+        "./clients",
+        "./crates",
+        "./forks",
+        "./From new session.png",
+        "./From prior existing.png",
+        "./icon.png",
+        "./JetBrains model interface with structure.png",
+        "./mise.toml",
+        "./packaging",
+        "./README.md",
+        "./rust-toolchain.toml",
+        "./rustfmt.toml",
+        "./Screenshot 2026-06-03 at 10.27.32 AM.png",
+        "./spikes",
+        "./target",
+        "./walkthrough.md"
+      ],
+      "allowWrite": []
+    }
+  }
+}

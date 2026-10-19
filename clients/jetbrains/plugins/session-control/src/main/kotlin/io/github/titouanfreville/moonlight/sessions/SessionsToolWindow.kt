@@ -13,12 +13,13 @@ import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.ui.AnimatedIcon
 import com.intellij.ui.ColoredTreeCellRenderer
-import com.intellij.ui.JBColor
+import com.intellij.ui.EditorNotificationPanel
 import com.intellij.ui.JBSplitter
 import com.intellij.ui.PopupHandler
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.panels.VerticalLayout
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.EmptyIcon
 import com.intellij.util.ui.JBUI
@@ -36,6 +37,7 @@ import java.awt.BorderLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.Icon
+import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.JTree
 import javax.swing.SwingUtilities
@@ -71,10 +73,18 @@ class SessionsTab : MoonlightToolWindowTab {
 private class SessionsPanel(private val project: Project, private val toolWindow: ToolWindow) :
     JPanel(BorderLayout()), DataProvider, com.intellij.openapi.Disposable {
 
-    private val governed = SessionList(project, Scope.Governed) { lastUsed = it }
-    private val unadopted = SessionList(project, Scope.Unadopted) { lastUsed = it }
+    private val governed = SessionList(project, Scope.Governed) { use(it) }
+    private val unadopted = SessionList(project, Scope.Unadopted) { use(it) }
     private var lastUsed: SessionList = governed
+    /** The session the detail shows, so it can follow the row into the other list. */
+    private var shownSession: String? = null
     private val baseIcon: Icon = toolWindow.icon ?: IconLoader.getIcon("/icons/moonlight.svg", SessionsPanel::class.java)
+
+    /** One banner per held session, above the lists: a hold is the one thing that stops work. */
+    private val banners = JPanel(VerticalLayout(0))
+
+    /** The selected session: its phase rail, or what adopting it would do. */
+    private val detail = SessionDetail(project)
 
     init {
         val toolbar = ActionManager.getInstance().createActionToolbar(
@@ -83,13 +93,17 @@ private class SessionsPanel(private val project: Project, private val toolWindow
             true,
         )
         toolbar.targetComponent = this
-        add(toolbar.component, BorderLayout.NORTH)
+        add(JPanel(BorderLayout()).apply {
+            add(toolbar.component, BorderLayout.NORTH)
+            add(banners, BorderLayout.CENTER)
+        }, BorderLayout.NORTH)
 
         val splitter = JBSplitter(true, 0.6f).apply {
             firstComponent = governed
             secondComponent = unadopted
         }
         add(splitter, BorderLayout.CENTER)
+        add(detail, BorderLayout.SOUTH)
 
         ApplicationManager.getApplication().messageBus.connect(this).subscribe(MoonlightListener.TOPIC, object : MoonlightListener {
             override fun sessionsChanged() = redraw()
@@ -106,11 +120,66 @@ private class SessionsPanel(private val project: Project, private val toolWindow
         // The badge is reserved for holds: the one number worth interrupting for, and it
         // shows on the stripe icon when the whole tool window is shut. An ungoverned session
         // is not an alert — nothing is blocked — so it is never badged.
-        val waiting = MoonlightApi.getInstance().heldApprovals().size
+        val core = MoonlightApi.getInstance()
+        val held = core.heldApprovals()
+        val waiting = held.size
         toolWindow.setIcon(if (waiting > 0) com.intellij.execution.runners.ExecutionUtil.getLiveIndicator(baseIcon) else baseIcon)
         // The tab, not `toolWindow.title`: setting the title renames whichever tab is
         // selected — which blanked this one's name, and would rename Review's too.
         MoonlightToolWindow.setBadge(toolWindow, this, if (waiting > 0) "$waiting" else null, if (waiting > 0) "$waiting waiting" else null)
+        renderBanners(held, core.sessions())
+        showDetail()
+    }
+
+    private fun use(list: SessionList) {
+        lastUsed = list
+        showDetail()
+        // Only an explicit pick moves the Review tabs: a poll redraw is not a pick.
+        (list.selectedNode() as? Node.Session)?.let { SessionsSelection.publish(project, it.session.sessionId) }
+    }
+
+    /** The detail follows the row picked last, and the Review and AI Review tabs follow it too. */
+    private fun showDetail() {
+        // Adopting from the detail moves its row from Not gated to Governed (or back): follow
+        // it there rather than closing the detail just as the phase rail would appear.
+        val gone = shownSession?.takeIf { lastUsed.selectedNode() == null }
+        if (gone != null) {
+            val other = if (lastUsed === governed) unadopted else governed
+            if (other.select("session:$gone")) lastUsed = other
+        }
+        val node = lastUsed.selectedNode() as? Node.Session
+        shownSession = node?.session?.sessionId
+        detail.show(node?.session, node?.held, node?.among.orEmpty())
+    }
+
+    private fun renderBanners(held: List<HeldApproval>, sessions: List<DiscoverableSession>) {
+        // Keyed by what a banner says, not only whose it is: a hold can turn from an action
+        // into a plan, and a session can be renamed, while the same sessions stay held.
+        val shown = held.map { hold ->
+            val session = sessions.firstOrNull { it.sessionId == hold.sessionId }
+            val name = session?.let { sessionLabel(it, sessions) } ?: shortId(hold.sessionId)
+            val text = if (hold.plan != null) "A plan is waiting on you in $name" else "An action is waiting on you in $name"
+            hold to text
+        }
+        if (shown.map { (hold, text) -> hold.sessionId to text } == banners.components.map { (it as JComponent).getClientProperty(BANNER_KEY) }) return
+        banners.removeAll()
+        for ((hold, text) in shown) {
+            banners.add(EditorNotificationPanel(EditorNotificationPanel.Status.Warning).apply {
+                this.text = text
+                createActionLabel(if (hold.plan != null) "Review the plan" else "Answer it") { answer(hold.sessionId) }
+                putClientProperty(BANNER_KEY, hold.sessionId to text)
+            })
+        }
+        banners.revalidate()
+        banners.repaint()
+    }
+
+    /** Answer a hold through the row's own action, so a missing Agentic Support is said the same way. */
+    private fun answer(sessionId: String) {
+        if (!governed.select("session:$sessionId")) return
+        lastUsed = governed
+        val action = ActionManager.getInstance().getAction("Moonlight.SessionControl.ReviewPlan") ?: return
+        ActionManager.getInstance().tryToExecute(action, null, governed, ActionPlaces.TOOLWINDOW_CONTENT, true)
     }
 
     override fun getData(dataId: String): Any? = when {
@@ -121,6 +190,10 @@ private class SessionsPanel(private val project: Project, private val toolWindow
     }
 
     override fun dispose() = Unit
+
+    private companion object {
+        const val BANNER_KEY = "moonlight.banner.key"
+    }
 }
 
 /** One of the two lists. */
@@ -160,7 +233,8 @@ private class SessionList(
                 if (!rebuilding) keyOf(event.path)?.let(collapsed::add)
             }
         })
-        tree.addTreeSelectionListener { onUse(this) }
+        // A rebuild reselects the row it had: that is not the operator picking this list.
+        tree.addTreeSelectionListener { if (!rebuilding) onUse(this) }
         tree.addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) {
                 onUse(this@SessionList)
@@ -195,7 +269,7 @@ private class SessionList(
         val following = core.activeSession(project)?.sessionId
         val selectedKey = selectedNode()?.let(::keyOf)
 
-        header.text = (if (scope == Scope.Governed) "Governed" else "Not adopted") + if (sessions.isNotEmpty()) "  ${sessions.size}" else ""
+        header.text = (if (scope == Scope.Governed) "Governed" else "Not gated") + if (sessions.isNotEmpty()) "  ${sessions.size}" else ""
         emptyText(core.backendError(), all.isNotEmpty())
 
         fun row(s: DiscoverableSession, groupId: String?) =
@@ -253,10 +327,12 @@ private class SessionList(
         }
     }
 
-    private fun select(key: String) {
+    /** Select the row with `key`; false when the list has none. */
+    fun select(key: String): Boolean {
         val all = root.depthFirstEnumeration().toList().filterIsInstance<DefaultMutableTreeNode>()
-        val match = all.firstOrNull { (it.userObject as? Node)?.let(::keyOf) == key } ?: return
+        val match = all.firstOrNull { (it.userObject as? Node)?.let(::keyOf) == key } ?: return false
         tree.selectionPath = TreePath(match.path)
+        return true
     }
 
     private fun keyOf(path: TreePath): String? = ((path.lastPathComponent as? DefaultMutableTreeNode)?.userObject as? Node)?.let(::keyOf)
@@ -291,7 +367,7 @@ private class SessionRenderer : ColoredTreeCellRenderer() {
                 // The label in bold is the only way a row reads as "this is the one you are in"
                 // without spending the icon or badge slot on it.
                 append(sessionLabel(s, node.among), if (node.following) SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
-                append("  ${describe(s, node.held)}", if (node.held != null) WARNING else SimpleTextAttributes.GRAYED_ATTRIBUTES)
+                append("  ${describe(s, node.held)}", if (node.held != null) SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, Palette.warning()) else SimpleTextAttributes.GRAYED_ATTRIBUTES)
                 val b = badge(s, node.held != null)
                 append("  ${b.text}", attributesFor(b.tone))
                 toolTipText = tooltip(s, node.held, node.following)
@@ -321,9 +397,10 @@ private class SessionRenderer : ColoredTreeCellRenderer() {
     }
 
     private fun attributesFor(tone: BadgeTone): SimpleTextAttributes = when (tone) {
-        BadgeTone.Warning -> WARNING
-        BadgeTone.Info -> SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, JBColor.BLUE)
-        BadgeTone.Error -> SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, JBColor.RED)
+        // The badge's text says it; the colour follows the IDE's colour-blind setting.
+        BadgeTone.Warning -> SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, Palette.warning())
+        BadgeTone.Info -> SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, Palette.info())
+        BadgeTone.Error -> SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, Palette.error())
         BadgeTone.Muted -> SimpleTextAttributes.GRAYED_ATTRIBUTES
         BadgeTone.Normal -> SimpleTextAttributes.REGULAR_ATTRIBUTES
     }
@@ -336,7 +413,7 @@ private class SessionRenderer : ColoredTreeCellRenderer() {
             lines += "<b>Waiting on you</b> — ${esc(held.what)} · ${waited}s"
         }
         lines += if (s.adopted) {
-            "governed — phase <b>${s.phase}</b>${if (s.phase.frozen) " (project writes denied)" else ""}"
+            "governed — phase <b>${phaseLabel(s.phase)}</b>${if (s.phase.frozen) " (project writes denied)" else ""}"
         } else {
             "<b>not adopted</b> — the gate allows this session everything"
         }
@@ -346,9 +423,5 @@ private class SessionRenderer : ColoredTreeCellRenderer() {
         lines += "id: <code>${esc(s.sessionId)}</code>"
         if (following) lines += "<i>The status bar follows this session.</i>"
         return "<html>${lines.joinToString("<br>")}</html>"
-    }
-
-    private companion object {
-        val WARNING = SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, JBColor.ORANGE)
     }
 }

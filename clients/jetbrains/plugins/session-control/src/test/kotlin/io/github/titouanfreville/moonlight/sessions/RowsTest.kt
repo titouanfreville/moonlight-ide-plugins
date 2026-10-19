@@ -23,11 +23,11 @@ class RowsTest {
     /** "Plan" does not look like "cannot write files" to anyone who has not read the docs. */
     @Test
     fun `the description says what is true, in words`() {
-        assertEquals("not gated · working", describe(session("s", adopted = false, status = SessionStatus.Running), null))
-        assertEquals("Plan · writes denied", describe(session("s", phase = Phase.Plan), null))
-        assertEquals("AutoImplement · idle", describe(session("s"), null))
-        assertEquals("WAITING ON YOU", describe(session("s"), hold))
-        assertEquals("PLAN WAITING ON YOU", describe(session("s"), hold.copy(plan = "# p")))
+        assertEquals("not gated, working", describe(session("s", adopted = false, status = SessionStatus.Running), null))
+        assertEquals("Plan, writes denied", describe(session("s", phase = Phase.Plan), null))
+        assertEquals("Auto, idle", describe(session("s"), null))
+        assertEquals("Waiting on you", describe(session("s"), hold))
+        assertEquals("Plan waiting on you", describe(session("s"), hold.copy(plan = "# p")))
     }
 
     /** One badge, three contenders: hold > unreviewed count > status. */

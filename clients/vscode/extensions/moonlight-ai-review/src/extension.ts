@@ -17,8 +17,11 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import * as controlApi from 'moonlight-control-client';
 
+import * as path from 'path';
+import type { AiReviewAction, ReviewPanelData } from 'moonlight-core';
+
 import * as source from './review-source';
-import { AiReviewPanel } from './ai-review-view';
+import { aiEntry, panelData } from './panel-data';
 
 import { resolveReviewSession, reviewFilesFromComments } from './target';
 import {
@@ -80,6 +83,9 @@ export function activate(context: vscode.ExtensionContext): void {
    * verbosity the phase indicator was made iconic to escape.
    */
   const refreshPending = async () => {
+    // The sidebar draws the same counts; it hears about a change here rather than
+    // waiting for the next fleet poll. Rejected when session-control is not installed.
+    void vscode.commands.executeCommand('moonlight.panel.refresh').then(undefined, () => undefined);
     const core = await withCore();
     const { pending, resolved } = await reviewCounts();
     if (pending > 0) {
@@ -263,7 +269,11 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('moonlight.review.commentOnFile', () =>
       vscode.commands.executeCommand('workbench.action.addComment', { fileComment: true })
     ),
-    vscode.commands.registerCommand('moonlight.review.submit', async () => {
+    vscode.commands.registerCommand('moonlight.review.submit', async (requested?: string) => {
+      // The sidebar names the session it shows; the palette relies on the last diff opened.
+      if (typeof requested === 'string') {
+        reviewTarget = requested;
+      }
       if (!reviewTarget) {
         void vscode.window.showInformationMessage('Open a file from the review queue first.');
         return;
@@ -397,6 +407,118 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  /**
+   * Open one queued file's diff, making its session the review's target.
+   *
+   * A session mid-turn is still writing these files: comments written now would be
+   * about code that no longer exists by the time they are read. Our own detection
+   * knows this; Claude Code exposes no idle signal.
+   */
+  /** Open a queued file's diff. Whether it opened, so a caller can act on the diff next. */
+  const openQueuedFile = async (sessionId: string, filePath: string): Promise<boolean> => {
+    const core = await withCore();
+    const owner = core?.sessions().find((x) => x.session_id === sessionId);
+    if (owner && !controlApi.isReviewable(owner.status)) {
+      void vscode.window.showWarningMessage(
+        `"${owner.title ?? owner.session_id}" is still working (${owner.status}). Wait until it stops before reviewing — otherwise you are commenting on a moving target.`
+      );
+      return false;
+    }
+    reviewTarget = sessionId;
+    let opened = false;
+    try {
+      const item = (await source.reviewQueue({ session: sessionId, path: filePath, diffs: false })).find(
+        (i) => !i.ignored
+      );
+      if (item) {
+        await openDiff(item, reviewComments);
+        opened = true;
+      } else {
+        void vscode.window.showInformationMessage('That file has left the review queue.');
+      }
+    } catch (err) {
+      void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+    }
+    await refreshPending();
+    return opened;
+  };
+
+  /**
+   * The commands behind the MoonlightCode sidebar's Review and AI review tabs.
+   *
+   * The sidebar belongs to moonlight-session-control, the review to this extension:
+   * commands are how the two already talk (see `moonlight.sessions.reviewPlan`), and
+   * they keep the routing between daemon and mod in one place, here.
+   */
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'moonlight.review.panelData',
+      async (sessionId: string): Promise<ReviewPanelData | undefined> => {
+        const core = await withCore();
+        if (!core || typeof sessionId !== 'string') {
+          return undefined;
+        }
+        const session = core.sessions().find((s) => s.session_id === sessionId);
+        const isMod = source.isModSession(sessionId);
+        let queue: controlApi.ReviewQueueItem[] = [];
+        let comments: controlApi.ReviewCommentView[] = [];
+        let error: string | undefined;
+        try {
+          queue = await source.reviewQueue({ session: sessionId, diffs: false });
+          comments = await source.comments(sessionId);
+        } catch (err) {
+          error = err instanceof Error ? err.message : String(err);
+        }
+        return panelData({
+          root: session?.root ?? null,
+          queue,
+          comments,
+          isMod,
+          review: isMod ? core.modReview?.(sessionId) : undefined,
+          error,
+        });
+      }
+    ),
+    vscode.commands.registerCommand('moonlight.review.openFile', async (sessionId: string, filePath: string) => {
+      await openQueuedFile(sessionId, filePath);
+    }),
+    /** The sidebar's "Comment on whole file": the comment needs the file's diff open, so open it first. */
+    vscode.commands.registerCommand('moonlight.review.commentOnQueuedFile', async (sessionId: string, filePath: string) => {
+      if (await openQueuedFile(sessionId, filePath)) {
+        await vscode.commands.executeCommand('moonlight.review.commentOnFile');
+      }
+    }),
+    vscode.commands.registerCommand('moonlight.review.acceptFile', async (sessionId: string, filePath: string) => {
+      try {
+        await source.accept(sessionId, filePath);
+      } catch (err) {
+        void vscode.window.showErrorMessage(err instanceof Error ? err.message : String(err));
+      }
+      await refreshPending();
+    }),
+    vscode.commands.registerCommand('moonlight.review.aiAction', async (sessionId: string, action: AiReviewAction) => {
+      try {
+        const said = await source.sendAiReview(sessionId, aiEntry(action));
+        if (action.type === 'submit' || action.type === 'accept' || action.type === 'run') {
+          void vscode.window.showInformationMessage(`MoonlightCode: ${said}`);
+        }
+      } catch (err) {
+        void vscode.window.showErrorMessage(`MoonlightCode: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      await refreshPending();
+    }),
+    /** A finding's place: the file as the session wrote it, relative to its root. */
+    vscode.commands.registerCommand('moonlight.review.openFinding', async (sessionId: string, file: string, line: number) => {
+      const root = (await withCore())?.sessions().find((s) => s.session_id === sessionId)?.root;
+      const absolute = path.isAbsolute(file) || !root ? file : path.join(root, file);
+      const at = Math.max(line - 1, 0);
+      await vscode.window.showTextDocument(vscode.Uri.file(absolute), {
+        selection: new vscode.Range(at, 0, at, 0),
+        preview: true,
+      });
+    })
+  );
+
   let panel: vscode.WebviewPanel | undefined;
   context.subscriptions.push(
     vscode.commands.registerCommand('moonlight.review.openAiReview', async (requested?: string) => {
@@ -427,7 +549,7 @@ export function activate(context: vscode.ExtensionContext): void {
         );
         return;
       }
-      AiReviewPanel.show(core, sessionId);
+      await showInSidebar('ai', sessionId);
     }),
 
     vscode.commands.registerCommand('moonlight.review.openQueue', async () => {
@@ -476,33 +598,9 @@ export function activate(context: vscode.ExtensionContext): void {
               }
               break;
             }
-            case 'open': {
-              // A session mid-turn is still writing these files: comments written now
-              // would be about code that no longer exists by the time they are read.
-              // Our own detection knows this; Claude Code exposes no idle signal.
-              const owner = core
-                .sessions()
-                .find((x) => x.session_id === message.sessionId);
-              if (owner && !controlApi.isReviewable(owner.status)) {
-                void vscode.window.showWarningMessage(
-                  `"${owner.title ?? owner.session_id}" is still working (${owner.status}). Wait until it stops before reviewing — otherwise you are commenting on a moving target.`
-                );
-                return;
-              }
-              reviewTarget = message.sessionId;
-              const item = (
-                await source.reviewQueue({
-                  session: message.sessionId,
-                  path: message.path,
-                  diffs: false,
-                })
-              ).find((i) => !i.ignored);
-              if (item) {
-                await openDiff(item, reviewComments);
-              }
-              await refreshPending();
+            case 'open':
+              await openQueuedFile(message.sessionId, message.path);
               return;
-            }
             case 'ignore':
               await source.setIgnored(message.sessionId, message.path, true);
               break;
@@ -798,6 +896,21 @@ function renderItem(item: controlApi.ReviewQueueItem): string {
     <button data-reject data-session="${session}" data-path="${filePath}">Reject with feedback</button>
   </div>
 </div>`;
+}
+
+/**
+ * Bring up a tab of the MoonlightCode sidebar on a session. The sidebar lives in
+ * moonlight-session-control, which may not be installed — checked rather than assumed.
+ */
+async function showInSidebar(tab: 'review' | 'ai', sessionId: string): Promise<void> {
+  const available = await vscode.commands.getCommands(true);
+  if (!available.includes('moonlight.panel.show')) {
+    void vscode.window.showWarningMessage(
+      'MoonlightCode Session Control is not installed, so the AI review has nowhere to show. Install the MoonlightCode extension pack.'
+    );
+    return;
+  }
+  await vscode.commands.executeCommand('moonlight.panel.show', { tab, sessionId });
 }
 
 export function deactivate(): void {}

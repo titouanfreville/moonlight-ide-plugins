@@ -24,7 +24,7 @@ const DIFF = [
 
 type Run = { argv?: readonly string[]; init?: { cwd?: string } }
 
-test('Review panel: shows the session changes against baselines; Accept drops them', async ($, on) => {
+test('Review panel: shows the session changes against baselines; Accept takes them as they are now', async ($, on) => {
   const disk = new Map<string, string>([
     [
       `${BASE}/index.json`,
@@ -69,6 +69,9 @@ test('Review panel: shows the session changes against baselines; Accept drops th
       for (const key of [...disk.keys()]) if (key.startsWith(`${dir}/`)) disk.delete(key)
       return answer('')
     }
+    // Same content on both sides: no change.
+    const [a, b] = argv.slice(-2)
+    if (argv.includes('--numstat') && disk.get(a!) !== undefined && disk.get(a!) === disk.get(b!)) return answer('')
     if (argv.includes('--numstat')) return answer(argv.includes(BLOB) ? `1\t1\t${BLOB}\n` : '3\t0\t/dev/null\n')
     if (argv.includes('--no-index')) return answer(DIFF)
     return answer('')
@@ -88,7 +91,12 @@ test('Review panel: shows the session changes against baselines; Accept drops th
   await ui.press({ key: 'back' })
 
   await ui.press({ key: 'accept' })
-  expect(removed).toEqual([BASE])
+  // Nothing removed: each file is kept as it is now, so a later change, by any
+  // tool, shows again. The binary one cannot be kept, and is forgotten.
+  expect(removed).toEqual([])
+  const index = JSON.parse(disk.get(`${BASE}/index.json`)!) as Record<string, { kind: string; blob?: string }>
+  expect(Object.keys(index).sort()).toEqual(['/elsewhere/x.ts', '/work/src/f.ts', '/work/src/new.ts'])
+  expect(disk.get(index['/work/src/f.ts']!.blob!)).toBe('after the agent\n')
   expect(await ui.find({ type: 'Text', text: /The agent has changed nothing yet/ })).toBeDefined()
   await ui.unmount()
 })

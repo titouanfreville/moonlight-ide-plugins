@@ -178,14 +178,14 @@ export async function reject(sessionId: string, filePath: string, message: strin
   if (!isModSession(sessionId)) {
     return controlApi.reject(sessionId, filePath, message);
   }
-  // As under the daemon, the file leaves the queue; a message is sent first, and a blank
-  // reject sends nothing. Leaving the queue takes a new baseline, so the agent's fix is
-  // what the next review shows.
-  if (message.trim() !== '') {
-    await addComment({ sessionId, scope: 'File', path: filePath, side: 'After', startLine: 0, endLine: 0, body: message });
-    await send(sessionId, { kind: 'review-submit' });
+  // The message goes to the session at once; the file stays in the queue, so the
+  // agent's fix is reviewed against the same starting point. A blank reject would
+  // change nothing, so it is refused.
+  if (message.trim() === '') {
+    throw new Error('Write what the session should do about this file: a reject without a message changes nothing.');
   }
-  await accept(sessionId, filePath);
+  await addComment({ sessionId, scope: 'File', path: filePath, side: 'After', startLine: 0, endLine: 0, body: message });
+  await send(sessionId, { kind: 'review-submit' });
   return { reviewed: false, feedback: { status: 'queued' } };
 }
 

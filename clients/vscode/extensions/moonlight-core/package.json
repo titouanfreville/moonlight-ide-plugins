@@ -2,7 +2,7 @@
   "name": "moonlight-core",
   "displayName": "MoonlightCode Core",
   "description": "Shared backend connection, session state and owned-terminal registry. Every other MoonlightCode extension depends on this one.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": false,
   "publisher": "titouanfreville",
   "license": "MIT",
@@ -83,6 +83,17 @@
             "type": "boolean",
             "default": false,
             "markdownDescription": "Adopt new Claude Code sessions into MoonlightCode governance automatically, without being asked.\n\nOnly sessions belonging to **this window** are taken \u2014 the session root has to sit inside this workspace, or be the session you are working in. Every open window sees the whole fleet, so an unscoped rule would have them all racing to adopt every session.\n\n**An auto-adopted session lands on `Plan`, where project writes are denied** until you advance its phase. That is adoption\u2019s normal behaviour, not an extra restriction \u2014 but applied automatically it means a new session stops until you act, so it is off by default.\n\n*Requires the **MoonlightCode Session Control** extension; without it this setting has no effect.*"
+          }
+        }
+      },
+      {
+        "title": "Accessibility",
+        "order": 2,
+        "properties": {
+          "moonlight.accessibility.colorBlind": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Draw MoonlightCode phases, badges and severities in the Okabe\u2013Ito colours, which stay distinct for red-green and blue-yellow colour blindness. Severities keep their marks (`!!!`, `!!`, `!`) in every mode."
           }
         }
       }

@@ -155,6 +155,8 @@ object MoonlightToolWindow {
  * one click away, whatever the header shows.
  */
 class OtherTabsGroup : ActionGroup(), DumbAware {
+    // On the EDT: it reads the window's tab list (ContentManager is Swing-owned state) and
+    // caches one action per tab. Both are cheap; the per-tab actions update off it.
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
 
     override fun getChildren(e: AnActionEvent?): Array<AnAction> {
@@ -174,7 +176,7 @@ class OtherTabsGroup : ActionGroup(), DumbAware {
 
 /** Selects its tab; the label is read on each update, so a changing badge shows. */
 private class GoToTab(private val content: Content) : DumbAwareAction() {
-    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
         val name = content.getUserData(MoonlightToolWindow.LABEL)?.full ?: content.tabName

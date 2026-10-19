@@ -2,6 +2,7 @@ package io.github.titouanfreville.moonlight.status
 
 import io.github.titouanfreville.moonlight.client.DiscoverableSession
 import io.github.titouanfreville.moonlight.client.HookStatusEntry
+import io.github.titouanfreville.moonlight.client.Phase
 import io.github.titouanfreville.moonlight.client.SessionStatus
 import io.github.titouanfreville.moonlight.client.sessionLabel
 import io.github.titouanfreville.moonlight.core.ActiveSession
@@ -168,7 +169,7 @@ private fun governedView(
     val busyElsewhere = workingElsewhere(sessions, session, folders)
     if (busyElsewhere.isNotEmpty()) {
         return GatingView(
-            GatingIcon.Question, "${session.phase} · which session?", true,
+            GatingIcon.Question, "${phaseLabel(session.phase)} · which session?", true,
             listOf(
                 "Showing \"${session.title ?: session.sessionId}\" (${session.status}), but",
                 "${busyElsewhere.size} other session(s) here are mid-turn:",
@@ -186,12 +187,12 @@ private fun governedView(
     val guessed = active?.how == ActiveSession.How.Sole
     return GatingView(
         if (frozen) GatingIcon.Frozen else GatingIcon.Governed,
-        if (guessed) "${session.phase} · guess" else "${session.phase}",
+        if (guessed) "${phaseLabel(session.phase)} · guess" else phaseLabel(session.phase),
         warn = frozen,
         tooltip = listOf(
             "\"${session.title ?: session.sessionId}\"",
-            if (frozen) "${session.phase} — project writes DENIED (AI-workspace dirs stay writable)"
-            else "${session.phase} — project writes allowed",
+            if (frozen) "${phaseLabel(session.phase)} — project writes DENIED (AI-workspace dirs stay writable)"
+            else "${phaseLabel(session.phase)} — project writes allowed",
             "status: ${session.status}",
             "",
             "Click to change phase.",
@@ -226,3 +227,10 @@ fun workingElsewhere(
             s.root?.let { root -> folders.any { isInside(root, it) } } == true
     }
 }
+
+/**
+ * The phase as the operator says it: Auto, not AutoImplement — the same word as Session
+ * Control's rows and VS Code. A copy, not an import: this plugin must not need a class from
+ * a newer Session Control.
+ */
+internal fun phaseLabel(phase: Phase): String = if (phase == Phase.AutoImplement) "Auto" else phase.name

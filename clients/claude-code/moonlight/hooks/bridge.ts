@@ -20,10 +20,46 @@ export type BridgeState = {
   v: number
   sessionId: string
   root: string | null
+  // The session's name for the panels; null until it has one.
+  title: string | null
   phase: Phase
   pending: { to: Phase; reason: string } | null
   plan: BridgePlan | null
   updatedMs: number
+}
+
+const TITLE_MAX = 80
+
+// The session's name as Claude Code keeps it in the transcript: the operator's
+// own (`/rename`, the IDE's rename) wins over the one Claude Code generated; the
+// latest of each counts. `lines`: the transcript's title entries.
+export const titleFromTranscript = (lines: string): string | undefined => {
+  let custom: string | undefined
+  let generated: string | undefined
+  for (const line of lines.split('\n')) {
+    if (line.trim() === '') continue
+    try {
+      const entry = JSON.parse(line) as { type?: unknown; customTitle?: unknown; aiTitle?: unknown }
+      if (entry.type === 'custom-title' && typeof entry.customTitle === 'string') custom = entry.customTitle
+      if (entry.type === 'ai-title' && typeof entry.aiTitle === 'string') generated = entry.aiTitle
+    } catch {
+      // A line cut short or not JSON names nothing.
+    }
+  }
+  return custom?.trim() || generated?.trim() || undefined
+}
+
+// The session's name: Claude Code's title once it has one; until then the one
+// already chosen, else the first line of the operator's first prompt. Commands
+// (`/phase`) and the mod's own prompts name nothing.
+export const sessionTitleFrom = (title: string | undefined, prompt: string | undefined, current: string | null): string | null => {
+  const clip = (s: string) => (s.length > TITLE_MAX ? `${s.slice(0, TITLE_MAX - 1).trimEnd()}…` : s)
+  const given = title?.trim()
+  if (given) return clip(given)
+  if (current !== null) return current
+  const line = prompt?.split('\n').map(l => l.trim()).find(l => l !== '')
+  if (line === undefined || line.startsWith('/') || line.startsWith('[moonlight]') || line.startsWith('The moonlightcode plugin')) return null
+  return clip(line)
 }
 
 export type PlanComment = { start: number; end: number; body: string }

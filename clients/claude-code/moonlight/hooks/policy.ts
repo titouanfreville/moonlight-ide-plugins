@@ -130,8 +130,15 @@ const PLAN_ALLOWED_MCP: readonly string[] = [
   'mcp__github__get_', 'mcp__github__list_', 'mcp__github__search_',
 ]
 
+// Jira is planning work, reading and filing tickets alike: it never touches the
+// code. Matched on the whole name, so a `jira` server's tools and Atlassian's
+// `getJiraIssue` / `createJiraIssue` both count, with the account lookup Jira
+// calls lean on. The daemon's classifier holds the same rule.
+export const isJiraTool = (tool: string): boolean =>
+  tool.startsWith('mcp__') && (/jira/i.test(tool) || tool.endsWith('__atlassianUserInfo'))
+
 export const isAllowedInPlan = (tool: string, extra: readonly string[] = []): boolean => {
-  if (PLAN_ALLOWED_TOOLS.includes(tool)) return true
+  if (PLAN_ALLOWED_TOOLS.includes(tool) || isJiraTool(tool)) return true
   return [...PLAN_ALLOWED_MCP, ...extra].some(entry =>
     entry.endsWith('_') ? tool.startsWith(entry) : tool === entry,
   )
@@ -145,7 +152,34 @@ export const isUnderAny = (path: string, roots: readonly string[]): boolean =>
 
 export type SandboxHealth = { isSafe: true } | { isSafe: false; reason: string }
 
+// Whether a shell command, run outside the sandbox, would write the gate's own
+// files: a redirect into them, or a writing program given them. Best effort, on
+// the command's words: reading them, naming them in text, and what a script
+// interpreter does are not seen.
+const GATE_FILE = /\.moonlight\b|\.claude\/settings(\.local)?\.json/
+const GATE_REDIRECT = /(^|[^<>&0-9])>>?\s*['"]?[^\s'"|;&]*(\.moonlight\b|\.claude\/settings(\.local)?\.json)/
+// Programs that write the paths they are given.
+const WRITERS = ['tee', 'mv', 'cp', 'rm', 'rmdir', 'mkdir', 'touch', 'truncate', 'ln', 'chmod', 'chown', 'install', 'rsync', 'dd', 'patch']
+const GIT_WRITES = ['checkout', 'restore', 'rm', 'mv', 'clean']
+
+export const writesGateFiles = (command: string): boolean => {
+  if (GATE_REDIRECT.test(command)) return true
+  return command.split(/\n|;|&&|\|\||\|/).some(segment => {
+    if (!GATE_FILE.test(segment)) return false
+    // The program, past variable assignments and `sudo` / `env`.
+    const words = segment.trim().split(/\s+/).filter(w => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))
+    while (words[0] === 'sudo' || words[0] === 'env') words.shift()
+    const program = (words[0] ?? '').replace(/^.*\//, '')
+    return (
+      WRITERS.includes(program) ||
+      (program === 'sed' && words.some(w => w.startsWith('-i'))) ||
+      (program === 'git' && GIT_WRITES.includes(words[1] ?? ''))
+    )
+  })
+}
+
 // Fail closed: Plan only trusts Bash when the sandbox cannot be bypassed.
+
 export const checkSandbox = (settings: Readonly<Record<string, unknown>>): SandboxHealth => {
   const sandbox = (settings.sandbox ?? {}) as Record<string, unknown>
   if (sandbox.enabled !== true) return { isSafe: false, reason: 'sandbox.enabled is not true' }

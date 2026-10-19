@@ -82,6 +82,8 @@ export interface ModState {
   v: number;
   sessionId: string;
   root: string | null;
+  /** The session's name; absent from a mod that predates it, null until it has one. */
+  title?: string | null;
   phase: ModPhase;
   pending: { to: ModPhase; reason: string } | null;
   plan: { version: number; title: string; markdown: string; decided?: ModPlanVerdict } | null;
@@ -146,7 +148,8 @@ export function modSession(state: ModState): DiscoverableSession {
   const holds = state.pending !== null || (state.plan !== null && state.plan.decided === undefined);
   return {
     session_id: state.sessionId,
-    title: state.root ? `${path.basename(state.root)} (Claude Code plugin)` : 'Claude Code plugin',
+    // Its name, as the daemon's sessions show theirs; the folder until it has one.
+    title: state.title || (state.root ? `${path.basename(state.root)} (Claude Code plugin)` : 'Claude Code plugin'),
     root: state.root,
     adopted: true,
     status: holds ? 'WaitingInput' : 'Running',

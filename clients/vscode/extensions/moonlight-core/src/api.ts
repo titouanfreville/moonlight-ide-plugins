@@ -24,7 +24,7 @@ import type {
   UsageResponse,
 } from 'moonlight-control-client';
 import type { ClaudeModState } from './claude-mod';
-import type { ModAnswer, ModEntry, ModReview } from './mod-bridge';
+import type { ModAnswer, ModEntry, ModFinding, ModReview } from './mod-bridge';
 
 /** Terminals this extension family started — the only sessions we can write to. */
 export interface OwnedTerminals {
@@ -218,7 +218,71 @@ export interface MoonlightApi {
   pinToActivePanel(sessionId: string | undefined): boolean;
 }
 
-/** The extension id dependents look up. Kept here so it is written down once. */
+/**
+ * One session's review, as the MoonlightCode sidebar draws it.
+ *
+ * The contract between two dependents: `moonlight-ai-review` builds it (it alone knows
+ * whether the daemon or the mod holds the review) behind the `moonlight.review.panelData`
+ * command, and `moonlight-session-control` draws it in its Review and AI review tabs.
+ * Written down here because both import core's types and nothing else of each other.
+ */
+export interface ReviewPanelData {
+  /** Files waiting for review, git-ignored paths left out. */
+  files: ReviewPanelFile[];
+  /** Git-ignored paths the session wrote: a warning, never up for review. */
+  ignored: number;
+  /** Comments queued to send, and the ones already settled. */
+  comments: { pending: number; resolved: number };
+  ai: ReviewPanelAi;
+  /** Why the queue could not be read, when it could not. */
+  error?: string;
+}
+
+export interface ReviewPanelFile {
+  /** Absolute, as the review commands take it. */
+  path: string;
+  /** Relative to the session root when it is under it, for display. */
+  display: string;
+  /** `A` created, `M` modified, `D` deleted. */
+  status: string;
+  added?: number;
+  removed?: number;
+  /** Comments written on this file, sent or not. */
+  comments: number;
+  /** The baseline came from git rather than an observed pre-image. */
+  fromHead: boolean;
+}
+
+export type ReviewPanelAi =
+  /** The daemon governs the session: AI review runs only under the Claude Code plugin. */
+  | { kind: 'daemon' }
+  /** The plugin governs it but publishes no review: it predates the review bridge. */
+  | { kind: 'stale' }
+  | {
+      kind: 'mod';
+      scope: 'session' | 'head';
+      run: { skill: string } | null;
+      skills: string[];
+      status: string | null;
+      /** Worst first. */
+      findings: ModFinding[];
+      kept: number;
+      dismissed: number;
+      /** Line comments that go out with the review. */
+      comments: number;
+    };
+
+/** One AI review decision the sidebar hands to `moonlight.review.aiAction`. */
+export type AiReviewAction =
+  | { type: 'run'; skill: string }
+  | { type: 'cancel' }
+  | { type: 'scope'; scope: 'session' | 'head' }
+  | { type: 'decide'; id: string; decision: 'keep' | 'dismiss' }
+  | { type: 'note'; id: string; text: string }
+  | { type: 'submit' }
+  | { type: 'accept' };
+
+export type { ClaudeModState } from './claude-mod';
 export type {
   ModAnswer,
   ModEntry,
@@ -230,4 +294,5 @@ export type {
   ModReviewFile,
 } from './mod-bridge';
 
+/** The extension id dependents look up. Kept here so it is written down once. */
 export const CORE_EXTENSION_ID = 'titouanfreville.moonlight-core';

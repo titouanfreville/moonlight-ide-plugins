@@ -66,8 +66,9 @@ The same workflow as the MoonlightCode daemon (`crates/domain/src/phase.rs`). Cl
 | **● Review** | writable | writable | Commit |
 | **■ Commit** | read-only | read-only: everything frozen until you commit | Plan |
 
-- In the read-only phases (Plan, Commit), Bash and Monitor run under the sandbox with the project denied (in every phase, both are refused unless the sandbox is safe and carries the gate's deny list), the Edit and Write tools only reach the folders still open (`/tmp` always is), and any other tool must be on the read-only allow-list.
-- In every phase, the agent can't write the gate's own files: the mod, `~/.moonlight`, the project's `.moonlight/`, and Claude Code's settings (`.claude/settings.json`, `.claude/settings.local.json`, `~/.claude/settings.json`), so an Auto session can't widen the next Plan. Bash is refused while the effective sandbox has an `allowWrite` entry that opens one of them.
+- In the read-only phases (Plan, Commit), Bash and Monitor run under the sandbox with the project denied (both are refused unless the sandbox is safe and carries the gate's deny list), the Edit and Write tools only reach the folders still open (`/tmp` always is), and any other tool must be on the read-only allow-list. Jira tools are on it, writes included: filing tickets is planning work. Any other MCP tool asks the operator (Allow once, Allow for this session, Deny) instead of being refused; with no one to ask, it is refused.
+- In every phase, the agent can't write the gate's own files: the mod, `~/.moonlight`, the project's `.moonlight/`, and Claude Code's settings (`.claude/settings.json`, `.claude/settings.local.json`, `~/.claude/settings.json`), so an Auto session can't widen the next Plan. In Plan and Commit, Bash is refused while the effective sandbox has an `allowWrite` entry that opens one of them.
+- In the writable phases (Auto, Test, Review), Bash and Monitor run outside the sandbox: `gh`, `nx` and the like need the network, local sockets and folders outside the project. The mod turns the sandbox off in the project's settings (`enabled: false`, `allowUnsandboxedCommands: true`) and back on for Plan and Commit. The gate's own files are then protected by reading the command: a redirect into them, or a writing program (`mv`, `rm`, `sed -i`, `git checkout`...) given them, is refused. Best effort: a script interpreter, or a command that hides the path, gets past it.
 - The gate fails closed: a gate hook that fails or runs out of time refuses its call, and an unreadable `.claude/settings.local.json` makes the gate refuse tools (with a toast) until it is fixed.
 - When you change the phase yourself (`/phase`, the hint, the pane), the agent finds a note about it at its next turn, and a pending `request_phase` is dropped.
 - `present_plan` is a Plan tool: it is refused in the other phases. Approving a plan moves Plan to Auto.
@@ -186,3 +187,15 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude plugin test .
 The mod protects its own folder from the agent in every phase. To let an agent edit it, the operator creates `~/.moonlight/mod/dev-unlock`; the agent can't create that file. Plan still applies.
 
 The backstop (`hooks/backstop.sh`) is a classic `PreToolUse` hook, registered in `~/.claude/settings.json`. It is active only while `~/.moonlight/mod/governed` exists. In that state, a session without a fresh heartbeat from the mod can only use read-only tools.
+
+## Colour
+
+Colour never carries a meaning alone: each phase has its own symbol (◐ Plan, ▶ Auto, ✓ Test, ◎ Review, ■ Commit), each severity its mark (`!!!` high, `!!` medium, `!` low), and change counts their `+` / `-`.
+
+For colour blindness, turn on the `colorBlind` option: phases and change counts switch to the Okabe–Ito colours, which stay distinct for red-green and blue-yellow colour blindness.
+
+```json
+"pluginConfigs": { "moonlightcode": { "options": { "colorBlind": true } } }
+```
+
+Diffs are drawn by Claude Code, in its theme: pick one of its colour-blind themes (`/theme`, "daltonized"). In the IDEs: VS Code has the `moonlight.accessibility.colorBlind` setting; JetBrains follows the IDE's own (Settings → Appearance → Accessibility, "Adjust colors for").

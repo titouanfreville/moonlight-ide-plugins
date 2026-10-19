@@ -1,6 +1,7 @@
 package io.github.titouanfreville.moonlight.sessions
 
 import io.github.titouanfreville.moonlight.client.DiscoverableSession
+import io.github.titouanfreville.moonlight.client.Phase
 import io.github.titouanfreville.moonlight.client.SessionStatus
 import io.github.titouanfreville.moonlight.core.HeldApproval
 
@@ -55,11 +56,14 @@ fun sessionsFor(scope: Scope, sessions: List<DiscoverableSession>): List<Discove
  * consequence: "not gated" tells you what is true, "unadopted" only names our bookkeeping.
  */
 fun describe(session: DiscoverableSession, held: HeldApproval?): String = when {
-    !session.adopted -> "not gated · ${statusWords(session.status)}"
-    held != null -> if (held.plan != null) "PLAN WAITING ON YOU" else "WAITING ON YOU"
-    session.phase.frozen -> "${session.phase} · writes denied"
-    else -> "${session.phase} · ${statusWords(session.status)}"
+    !session.adopted -> "not gated, ${statusWords(session.status)}"
+    held != null -> if (held.plan != null) "Plan waiting on you" else "Waiting on you"
+    session.phase.frozen -> "${phaseLabel(session.phase)}, writes denied"
+    else -> "${phaseLabel(session.phase)}, ${statusWords(session.status)}"
 }
+
+/** The phase as the operator says it, and as VS Code's `phaseLabel` does: Auto, not AutoImplement. */
+fun phaseLabel(phase: Phase): String = if (phase == Phase.AutoImplement) "Auto" else phase.name
 
 enum class BadgeTone { Warning, Info, Error, Muted, Normal }
 

@@ -34,11 +34,15 @@ sealed interface Node {
 val SELECTED_NODE: DataKey<Node> = DataKey.create("moonlight.sessions.node")
 
 /**
- * The shared shape of every Session Control action: EDT updates (they read the tree's
- * selection), no indexing needed, and disabled while there is no project.
+ * The shared shape of every Session Control action: background updates, no indexing
+ * needed, and disabled while there is no project.
+ *
+ * Background, not EDT: the tree's selection reaches `update` through the data context,
+ * which the platform snapshots on the EDT before calling it, and the rest is in-memory
+ * state. On the EDT, a toolbar of these took seconds to update while the IDE was busy.
  */
 abstract class SessionAction : AnAction(), DumbAware {
-    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     protected fun node(e: AnActionEvent): Node? = e.getData(SELECTED_NODE)
 

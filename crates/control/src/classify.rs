@@ -78,9 +78,18 @@ const MCP_READ_VERBS: &[&str] = &[
 
 /// Classify an `mcp__<server>__<tool>` name: Safe when the tool's first verb token is
 /// read-only, otherwise Risky (an unparsable name stays Risky — conservative).
+///
+/// Jira tools are Safe whatever their verb: reading and filing tickets is planning
+/// work, and it never touches the code. Matched on the whole name, so a `jira`
+/// server's tools and Atlassian's `getJiraIssue` / `createJiraIssue` both count.
 fn classify_mcp_tool(name: &str) -> DangerClass {
     let tool = name.split("__").nth(2).unwrap_or("");
+    if name.to_ascii_lowercase().contains("jira") || tool == "atlassianUserInfo" {
+        return DangerClass::Safe;
+    }
     let verb = tool.split(['_', '-']).next().unwrap_or("");
+    // A camelCase name (`searchJiraIssuesUsingJql`) leads with its verb as well.
+    let verb = verb.split(|c: char| c.is_ascii_uppercase()).next().unwrap_or("");
     if MCP_READ_VERBS.contains(&verb) {
         DangerClass::Safe
     } else {
@@ -608,6 +617,32 @@ mod tests {
             "mcp__rustrover__create_new_file",
             "mcp__plugin_oh-my-claudecode_t__ast_grep_replace",
             "mcp__broken",
+        ] {
+            assert_eq!(classify(tool, &json!({})), DangerClass::Risky, "{tool}");
+        }
+    }
+
+    #[test]
+    fn jira_tools_and_camel_case_reads_are_safe() {
+        // Jira is planning work: reading and filing tickets, whatever the verb.
+        for tool in [
+            "mcp__claude_ai_Atlassian__getJiraIssue",
+            "mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql",
+            "mcp__claude_ai_Atlassian__createJiraIssue",
+            "mcp__claude_ai_Atlassian__addCommentToJiraIssue",
+            "mcp__claude_ai_Atlassian__atlassianUserInfo",
+            "mcp__jira__create_issue",
+            // camelCase read verbs, outside Jira too.
+            "mcp__claude_ai_Atlassian__getConfluencePage",
+            "mcp__claude_ai_Notion__searchPages",
+        ] {
+            assert_eq!(classify(tool, &json!({})), DangerClass::Safe, "{tool}");
+        }
+        for tool in [
+            "mcp__claude_ai_Atlassian__createConfluencePage",
+            "mcp__claude_ai_Atlassian__updateConfluencePage",
+            // A verb must be whole: `getaway` is not `get`.
+            "mcp__x__getawayNow",
         ] {
             assert_eq!(classify(tool, &json!({})), DangerClass::Risky, "{tool}");
         }

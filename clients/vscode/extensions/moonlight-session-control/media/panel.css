@@ -1,0 +1,338 @@
+/*
+ * The MoonlightCode sidebar. Every colour comes from the VS Code theme; the one bold
+ * element is the phase rail, drawn as moon discs that fill as a session moves through
+ * the cycle. Everything else stays as quiet as a native view.
+ */
+:root {
+  --ink: var(--vscode-foreground);
+  --ink-2: var(--vscode-descriptionForeground);
+  /* Decorative marks only (glyphs, lines): readable text uses --ink-2, which meets 4.5:1. */
+  --ink-3: var(--vscode-disabledForeground, var(--vscode-descriptionForeground));
+  --line: var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  --hover: var(--vscode-list-hoverBackground);
+  --select: var(--vscode-list-inactiveSelectionBackground);
+  --focus: var(--vscode-focusBorder);
+  --surface: var(--vscode-input-background);
+  --moon: var(--vscode-button-background);
+  --on-moon: var(--vscode-button-foreground);
+  --moon-soft: color-mix(in srgb, var(--vscode-foreground) 22%, transparent);
+  --held: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
+  --held-bg: color-mix(in srgb, var(--held) 14%, transparent);
+  --err: var(--vscode-errorForeground, var(--vscode-charts-red));
+  --info: var(--vscode-charts-blue);
+  --ok: var(--vscode-charts-green);
+  --mono: var(--vscode-editor-font-family, monospace);
+}
+
+/* Colour-blind mode: Okabe–Ito, as the JetBrains palette and the Claude Code plugin draw it. */
+/* Light themes take darker shades of the same hues: the pure Okabe–Ito ones sit near
+   3.5:1 on white, and these colour small text. Each of these is at least 4.5:1. */
+body.cb.vscode-light, body.cb.vscode-high-contrast-light { --held: #8a5d00; --err: #b34d00; --info: #0072b2; --ok: #00785a; }
+body.cb.vscode-dark, body.cb.vscode-high-contrast { --held: #e69f00; --err: #e87a2a; --info: #56b4e9; --ok: #2bb58a; }
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 8px 0 0;
+  color: var(--ink);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+button, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 1px solid var(--focus); outline-offset: -1px; }
+[hidden] { display: none !important; }
+code { font-family: var(--mono); }
+
+/* Top-level views */
+.vtabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  margin: 0 10px 8px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.vtab {
+  border: 0;
+  background: none;
+  border-radius: 3px;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--ink-2);
+  display: flex;
+  gap: 5px;
+  justify-content: center;
+  align-items: center;
+  white-space: nowrap;
+  min-width: 0;
+}
+.vtab:hover { color: var(--ink); background: var(--hover); }
+.vtab[aria-selected="true"] { background: var(--moon); color: var(--on-moon); font-weight: 600; }
+.vtab .n {
+  font-size: 0.85em;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--info) 20%, transparent);
+  color: var(--info);
+  font-weight: 600;
+}
+.vtab .n.held { background: var(--held); color: var(--vscode-editor-background); }
+.vtab[aria-selected="true"] .n { background: color-mix(in srgb, var(--on-moon) 25%, transparent); color: var(--on-moon); }
+.view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+/* Holds: a session stopped, waiting on the operator */
+.attention {
+  margin: 0 10px 8px;
+  border-radius: 4px;
+  background: var(--held-bg);
+  border-left: 3px solid var(--held);
+  padding: 6px 10px;
+  display: grid;
+  gap: 6px;
+}
+.attention p { margin: 0; }
+.attention strong { color: var(--held); }
+
+/* Buttons */
+.btn {
+  border: 1px solid transparent;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border-radius: 2px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+.btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+.btn.primary:hover { background: var(--vscode-button-hoverBackground); }
+.btn.held { background: var(--held); color: var(--vscode-editor-background); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.link { border: 0; background: none; color: var(--vscode-textLink-foreground); cursor: pointer; padding: 0; }
+.link:hover { color: var(--vscode-textLink-activeForeground); text-decoration: underline; }
+.ibtn {
+  border: 0;
+  background: none;
+  color: var(--ink-2);
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  flex: none;
+}
+.ibtn:hover { background: var(--vscode-toolbar-hoverBackground, var(--hover)); color: var(--ink); }
+
+/* Gate status */
+.gate { margin: 0 10px 4px; display: flex; gap: 8px; align-items: center; color: var(--ink-2); font-size: 0.92em; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.dot.ok { background: var(--ok); }
+.dot.mod { background: var(--info); }
+.dot.down { border: 1.5px solid var(--err); }
+
+/* Lists */
+.list-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 2px 14px; font-weight: 600; }
+.list-head .count { color: var(--ink-2); font-weight: 400; font-variant-numeric: tabular-nums; }
+.group { display: flex; align-items: center; gap: 6px; padding: 6px 10px 1px 34px; font-size: 0.92em; color: var(--ink-2); }
+.group .tools { margin-left: auto; display: flex; gap: 2px; opacity: 0; }
+/* Transparent rather than hidden: a hidden button cannot take keyboard focus. */
+.group:hover .tools, .group:focus-within .tools { opacity: 1; }
+.sessions { list-style: none; margin: 0; padding: 0; }
+.s {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  column-gap: 8px;
+  padding: 4px 10px 5px 14px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+.s:hover { background: var(--hover); }
+.s[aria-selected="true"] { background: var(--select); border-left-color: var(--moon); }
+.s .glyph { grid-row: 1 / span 2; color: var(--ink-2); text-align: center; }
+.s .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s.following .name { font-weight: 600; }
+.s .desc { grid-column: 2; font-size: 0.92em; color: var(--ink-2); display: flex; align-items: center; gap: 8px; min-width: 0; }
+.s .desc .words { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s.held .desc .words { color: var(--held); font-weight: 600; }
+.s.ungated .name { color: var(--ink-2); }
+.s.ungated .glyph { color: var(--ink-3); }
+.badge {
+  grid-row: 1 / span 2;
+  grid-column: 3;
+  align-self: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  font-size: 0.85em;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+  font-variant-numeric: tabular-nums;
+}
+.badge.held { background: var(--held); color: var(--vscode-editor-background); }
+.badge.info { background: color-mix(in srgb, var(--info) 20%, transparent); color: var(--info); }
+.badge.error { color: var(--err); }
+.badge.muted { color: var(--ink-2); }
+.badge.normal { color: var(--ink-2); }
+
+/* The small phase track on a governed row */
+.track { display: inline-flex; gap: 3px; flex: none; }
+.track i { width: 7px; height: 7px; border-radius: 50%; background: var(--moon-soft); display: block; }
+.track i.done { background: color-mix(in srgb, var(--moon) 50%, var(--moon-soft)); }
+.track i.now { background: var(--moon); }
+.track i.now.frozen { background: transparent; box-shadow: inset 0 0 0 2px var(--moon); }
+
+.empty { margin: 4px 14px 8px; color: var(--ink-2); }
+.empty p { margin: 0 0 6px; }
+.empty .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+
+/* Detail of the selected session */
+.detail { border-top: 1px solid var(--line); margin-top: 8px; display: flex; flex-direction: column; }
+.detail-head { padding: 10px 14px 2px; display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.detail-head h2 { font-size: 1.08em; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta { color: var(--ink-2); font-family: var(--mono); font-size: 0.9em; white-space: nowrap; }
+
+/* The phase rail */
+.rail { margin: 8px 10px 2px; display: grid; grid-template-columns: repeat(5, 1fr); position: relative; }
+.rail::before { content: ""; position: absolute; left: 10%; right: 10%; top: 12px; height: 1px; background: var(--moon-soft); }
+.ph {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  padding: 0 0 3px;
+  border-radius: 4px;
+  color: var(--ink-2);
+  font-size: 0.88em;
+}
+.ph:hover:not(:disabled) .disc { transform: scale(1.08); }
+/* Held: the rail still shows where the session is, but is not a control until answered. */
+.ph:disabled { cursor: default; opacity: 0.6; }
+.ph[aria-current="step"] { color: var(--ink); font-weight: 600; }
+.disc {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  border: 1px solid var(--moon-soft);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.15s ease;
+}
+/* The lit part slides in from the right: past phases half lit, the current one full. */
+.disc::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--moon);
+  border-radius: 50%;
+  transform: translateX(100%);
+  transition: transform 0.45s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+.disc.half::after { transform: translateX(52%); }
+.disc.full::after { transform: translateX(0); }
+.ph[aria-current="step"] .disc { border-color: var(--moon); box-shadow: 0 0 0 3px color-mix(in srgb, var(--moon) 22%, transparent); }
+.lock { position: absolute; top: -3px; right: calc(50% - 18px); color: var(--ink-2); }
+.phase-note { margin: 0 14px 6px; font-size: 0.92em; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+
+/* Shortcut rows into the other tabs */
+.rows { list-style: none; margin: 0; padding: 4px 0; }
+.go { display: flex; gap: 8px; align-items: center; width: 100%; padding: 3px 14px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.go:hover { background: var(--hover); }
+.go .what { flex: 1; min-width: 0; }
+.go .arrow { color: var(--ink-2); }
+.plan { margin: 6px 14px; padding: 8px 10px; border-left: 3px solid var(--held); background: var(--held-bg); border-radius: 4px; display: grid; gap: 6px; }
+.plan h3 { margin: 0; font-size: 1em; }
+.plan p { margin: 0; color: var(--ink-2); }
+
+.footer { border-top: 1px solid var(--line); padding: 8px 14px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: auto; }
+.footer .why { font-size: 0.88em; color: var(--ink-2); flex-basis: 100%; }
+
+/* The session a review tab is about */
+.picker { margin: 0 10px 6px; padding: 6px 8px; border-radius: 4px; background: var(--hover); display: grid; gap: 3px; }
+.picker select { width: 100%; min-width: 0; background: transparent; border: 0; font-weight: 600; padding: 0; cursor: pointer; }
+.picker select option { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); }
+.picker .ctx { display: flex; gap: 8px; align-items: center; font-size: 0.9em; color: var(--ink-2); min-width: 0; }
+.picker .ctx span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane { flex: 1; min-height: 0; overflow: auto; padding-bottom: 8px; }
+.sub { padding: 6px 14px 2px; font-size: 0.88em; color: var(--ink-2); display: flex; justify-content: space-between; gap: 8px; }
+.warn { margin: 4px 14px; font-size: 0.9em; color: var(--held); }
+
+/* Review: files waiting */
+.files { list-style: none; margin: 0; padding: 0; }
+.f { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto auto auto; gap: 8px; align-items: center; padding: 2px 10px 2px 14px; }
+.f:hover { background: var(--hover); }
+.f .st { font-family: var(--mono); font-size: 0.85em; color: var(--ink-2); text-align: center; }
+.f .st.A { color: var(--ok); }
+.f .st.D { color: var(--err); }
+.f .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; border: 0; background: none; color: inherit; font: inherit; padding: 0; cursor: pointer; min-width: 0; }
+.f .path bdi { direction: ltr; }
+.f .dir { color: var(--ink-2); }
+.f .delta { font-family: var(--mono); font-size: 0.85em; color: var(--ink-2); white-space: nowrap; }
+.f .delta .p { color: var(--ok); }
+.f .delta .m { color: var(--err); }
+.f .ibtn { opacity: 0; }
+.f:hover .ibtn, .f:focus-within .ibtn { opacity: 1; }
+
+/* AI review */
+.form { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; align-items: center; padding: 2px 14px 6px; }
+.form label { color: var(--ink-2); }
+.form select, textarea {
+  width: 100%;
+  min-width: 0;
+  background: var(--vscode-dropdown-background, var(--surface));
+  color: var(--vscode-dropdown-foreground, var(--ink));
+  border: 1px solid var(--vscode-dropdown-border, var(--line));
+  border-radius: 2px;
+  padding: 2px 4px;
+}
+textarea { background: var(--surface); color: var(--vscode-input-foreground); border-color: var(--vscode-input-border, var(--line)); resize: vertical; min-height: 52px; }
+.run { display: flex; gap: 6px; padding: 0 14px 6px; align-items: center; flex-wrap: wrap; }
+.run .status { font-size: 0.92em; color: var(--ink-2); flex: 1; min-width: 12ch; }
+.progress { height: 2px; margin: 0 14px 6px; background: var(--moon-soft); overflow: hidden; border-radius: 1px; position: relative; }
+.progress i { position: absolute; inset: 0 auto 0 0; width: 30%; background: var(--moon); animation: sweep 1.4s ease-in-out infinite; }
+@keyframes sweep { from { left: -30%; } to { left: 100%; } }
+.tally { display: flex; gap: 12px; padding: 2px 14px 4px; font-size: 0.88em; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.findings { list-style: none; margin: 0; padding: 0; }
+.fd { padding: 6px 14px 8px 12px; border-left: 2px solid transparent; display: grid; gap: 3px; }
+.fd.high { border-left-color: var(--err); }
+.fd.medium { border-left-color: var(--held); }
+.fd.low { border-left-color: var(--info); }
+.fd .top { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.fd .mark { font-family: var(--mono); font-size: 0.85em; font-weight: 700; width: 22px; flex: none; }
+.fd.high .mark { color: var(--err); }
+.fd.medium .mark { color: var(--held); }
+.fd.low .mark { color: var(--info); }
+.fd .summary { font-weight: 600; min-width: 0; }
+.fd .sub-line, .fd .body, .fd .note, .fd .acts, .fd .fix, .fd .note-editor { margin-left: 30px; }
+.fd .sub-line { display: flex; gap: 8px; font-size: 0.88em; color: var(--ink-2); min-width: 0; }
+.fd .sub-line .link { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fd .body { color: var(--ink-2); white-space: pre-wrap; margin-top: 2px; margin-bottom: 0; }
+.fd .fix { background: var(--vscode-textCodeBlock-background); padding: 4px 6px; white-space: pre-wrap; font-family: var(--mono); font-size: 0.9em; margin-top: 2px; margin-bottom: 0; }
+.fd .note { font-style: italic; margin: 0; }
+.fd .acts, .fd .note-editor { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
+/* Dismissed is marked on the summary only: its Keep and Note buttons stay live and readable. */
+.fd.dismissed .summary { text-decoration: line-through; color: var(--ink-2); }
+.fd.dismissed .mark { color: var(--ink-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .disc, .disc::after { transition: none; }
+  .progress i { animation: none; width: 100%; opacity: 0.6; }
+}
+
+/* Read by screen readers, not shown: the words behind a mark or a count. */
+.vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

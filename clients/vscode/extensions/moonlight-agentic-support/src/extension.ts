@@ -31,10 +31,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('moonlight.gate.reviewPlan', () => {
-      PlanReviewPanel.show(core, undefined);
+    vscode.commands.registerCommand('moonlight.gate.reviewPlan', (sessionId?: unknown) => {
+      PlanReviewPanel.show(core, typeof sessionId === 'string' ? sessionId : undefined);
     }),
-    vscode.commands.registerCommand('moonlight.gate.answerHold', () => answerSomeHold(core))
+    vscode.commands.registerCommand('moonlight.gate.answerHold', (sessionId?: unknown) =>
+      answerSomeHold(core, typeof sessionId === 'string' ? sessionId : undefined)
+    )
   );
 
   // An older core has no gate state to offer; the commands above still work as far as
@@ -144,9 +146,14 @@ async function announce(core: MoonlightApi, hold: HeldApproval): Promise<void> {
   await applyActionVerdict(core, hold, choice === 'Allow');
 }
 
-/** Answer whichever hold is outstanding, on demand rather than on notification. */
-async function answerSomeHold(core: MoonlightApi): Promise<void> {
-  const holds = core.heldApprovals?.() ?? [];
+/**
+ * Answer a hold on demand rather than on notification: `sessionId`'s when it is given and
+ * still held, otherwise whichever is outstanding.
+ */
+async function answerSomeHold(core: MoonlightApi, sessionId?: string): Promise<void> {
+  const all = core.heldApprovals?.() ?? [];
+  const named = all.filter((hold) => hold.sessionId === sessionId);
+  const holds = named.length > 0 ? named : all;
   if (holds.length === 0) {
     void vscode.window.showInformationMessage('MoonlightCode: nothing is waiting on you.');
     return;

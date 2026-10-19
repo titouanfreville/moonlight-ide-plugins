@@ -65,6 +65,12 @@ declare module 'claude-code' {
       // Who governs the session: the daemon (the mod stands by) or the mod;
       // null until session.start decides.
       governor: 'mod' | 'daemon' | null
+      // MCP tools the operator allowed for the rest of the session in a
+      // read-only phase.
+      mcpAllowed: string[]
+      // The session's name for the IDE panels: Claude Code's title, else the
+      // first line of the operator's first prompt.
+      sessionTitle: string | null
       pending: MoonlightcodePhaseRequest | null
       reviewView: MoonlightcodeReviewView
       reviewFiles: MoonlightcodeChangedFile[]

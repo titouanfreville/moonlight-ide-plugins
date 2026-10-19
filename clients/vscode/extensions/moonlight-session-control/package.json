@@ -2,7 +2,7 @@
   "name": "moonlight-session-control",
   "displayName": "MoonlightCode Session Control",
   "description": "Adopt Claude Code sessions into governance, set their workflow phase, and start governed sessions.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": false,
   "publisher": "titouanfreville",
   "license": "MIT",
@@ -55,7 +55,8 @@
       },
       {
         "command": "moonlight.sessionControl.startSession",
-        "title": "MoonlightCode: Start Session in Owned Terminal"
+        "title": "MoonlightCode: Start Session in Owned Terminal",
+        "icon": "$(add)"
       },
       {
         "command": "moonlight.sessions.refresh",
@@ -85,6 +86,11 @@
       {
         "command": "moonlight.sessions.reviewPlan",
         "title": "MoonlightCode: Review the Held Plan",
+        "icon": "$(bell-dot)"
+      },
+      {
+        "command": "moonlight.sessions.answerHold",
+        "title": "MoonlightCode: Answer the Held Action",
         "icon": "$(bell-dot)"
       },
       {
@@ -129,12 +135,9 @@
     "views": {
       "moonlight": [
         {
-          "id": "moonlight.governed",
-          "name": "Governed"
-        },
-        {
-          "id": "moonlight.unadopted",
-          "name": "Not adopted"
+          "type": "webview",
+          "id": "moonlight.panel",
+          "name": "MoonlightCode"
         }
       ]
     },
@@ -142,90 +145,21 @@
       "view/title": [
         {
           "command": "moonlight.sessionControl.startSession",
-          "when": "view == moonlight.governed",
+          "when": "view == moonlight.panel",
           "group": "navigation@1"
         },
         {
-          "command": "moonlight.sessions.refresh",
-          "when": "view == moonlight.governed || view == moonlight.unadopted",
+          "command": "moonlight.sessions.createGroup",
+          "when": "view == moonlight.panel",
           "group": "navigation@2"
         },
         {
-          "command": "moonlight.sessions.createGroup",
-          "when": "view == moonlight.governed",
-          "group": "navigation@9"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "moonlight.sessions.adopt",
-          "when": "viewItem == moonlight.session.unadopted",
-          "group": "inline@1"
-        },
-        {
-          "command": "moonlight.sessions.reviewPlan",
-          "when": "viewItem =~ /^moonlight\\.session\\.held/",
-          "group": "inline@1"
-        },
-        {
-          "command": "moonlight.sessions.setPhase",
-          "when": "viewItem =~ /moonlight.session.(governed|held)/",
-          "group": "inline@2"
-        },
-        {
-          "command": "moonlight.sessions.advancePhase",
-          "when": "viewItem =~ /moonlight.session.(governed|held)/",
-          "group": "inline@3"
-        },
-        {
-          "command": "moonlight.sessions.setActive",
-          "when": "viewItem =~ /moonlight.session./",
-          "group": "context@1"
-        },
-        {
-          "command": "moonlight.sessions.addToGroup",
-          "when": "view == moonlight.governed && viewItem =~ /^moonlight\\.session\\./",
-          "group": "9_groups@1"
-        },
-        {
-          "command": "moonlight.sessions.removeFromGroup",
-          "when": "view == moonlight.governed && viewItem =~ /^moonlight\\.session\\..*\\.grouped$/",
-          "group": "9_groups@2"
-        },
-        {
-          "command": "moonlight.sessions.renameGroup",
-          "when": "view == moonlight.governed && viewItem == moonlight.group.custom",
-          "group": "inline@1"
-        },
-        {
-          "command": "moonlight.sessions.deleteGroup",
-          "when": "view == moonlight.governed && viewItem == moonlight.group.custom",
-          "group": "inline@2"
+          "command": "moonlight.sessions.refresh",
+          "when": "view == moonlight.panel",
+          "group": "navigation@3"
         }
       ]
-    },
-    "viewsWelcome": [
-      {
-        "view": "moonlight.governed",
-        "when": "!moonlight.backendUp",
-        "contents": "No MoonlightCode backend is answering.\n\nThe daemon holds the sessions, the gate and the review record — without it nothing here is governed.\n\n[Retry now](command:moonlight.sessions.refresh)\n\nOne is started automatically when a `moonlightd` can be found on your PATH.\n\nWithout a daemon, the MoonlightCode plugin for Claude Code gates each session itself, and its sessions show here.\n\n[Install the Claude Code plugin](command:moonlight.core.installClaudeMod)"
-      },
-      {
-        "view": "moonlight.governed",
-        "when": "moonlight.backendUp && moonlight.hasSessions",
-        "contents": "No session is governed yet.\n\nSessions below are running with nothing gating them. Adopt one to put it under a workflow phase."
-      },
-      {
-        "view": "moonlight.governed",
-        "when": "moonlight.backendUp && !moonlight.hasSessions",
-        "contents": "No Claude Code sessions detected.\n\nA session appears once it writes its first transcript line — detection has nothing to see before that.\n\n[Start a governed session](command:moonlight.sessionControl.startSession)"
-      },
-      {
-        "view": "moonlight.unadopted",
-        "when": "moonlight.backendUp",
-        "contents": "Every detected session is governed."
-      }
-    ]
+    }
   },
   "keywords": [
     "claude",

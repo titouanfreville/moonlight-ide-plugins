@@ -117,7 +117,10 @@ export const startGate = async (
         for (const key of Object.keys(world.files)) if (key.startsWith(`${dir}/`)) delete world.files[key]
         return answer('')
       }
-      return answer(argv.includes('--numstat') ? '1\t1\t-\n' : '')
+      // Same content on both sides is no change; any other pair, one line each way.
+      const [a, b] = argv.slice(-2)
+      const same = a !== undefined && world.files[a] !== undefined && world.files[a] === world.files[b!]
+      return answer(argv.includes('--numstat') && !same ? '1\t1\t-\n' : '')
     })
   on('store.get', () => value(undefined))
   on('store.set', () => value(undefined))

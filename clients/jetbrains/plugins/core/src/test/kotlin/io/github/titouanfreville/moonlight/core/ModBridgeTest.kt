@@ -37,6 +37,8 @@ class ModBridgeTest {
         assertEquals(Phase.Test, s.phase)
         assertEquals(SessionStatus.Running, s.status)
         assertEquals("app (Claude Code plugin)", s.title)
+        val named = state().replace("\"root\"", "\"title\":\"Add Jira to plan\",\"root\"")
+        assertEquals("Add Jira to plan", ModBridge.session(ModBridge.parseState(named)!!).title)
         val waiting = ModBridge.parseState(state(pending = """{"to":"auto","reason":""}"""))!!
         assertEquals(SessionStatus.WaitingInput, ModBridge.session(waiting).status)
     }

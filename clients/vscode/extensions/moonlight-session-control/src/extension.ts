@@ -19,7 +19,10 @@ import type { MoonlightApi } from 'moonlight-core';
 import { advanceSessionPhase, setSessionPhase } from './phase-route';
 import { requireCore } from './core';
 import { sessionsToAdopt, staleAttempts } from './auto-adopt';
-import { nodeSession, PHASES, SessionDecorations, SessionsProvider } from './sessions-view';
+import { MoonlightPanel, PANEL_VIEW_ID } from './panel-view';
+import { nodeSession, sessionNode } from './panel-route';
+import { PHASES } from './rows';
+import type { Tab } from './panel-model';
 import { GroupStore } from './groups-store';
 
 /**
@@ -270,9 +273,9 @@ export function activate(context: vscode.ExtensionContext): void {
  * The sidebar, wired once core is reachable.
  *
  * Registered separately from the commands above, and asynchronously, because it needs
- * core *now* rather than per invocation — a tree with no data source has nothing to
+ * core *now* rather than per invocation — a view with no data source has nothing to
  * render. If core is missing the commands still work (and say why); the view simply
- * does not appear, which is better than an empty panel that looks broken.
+ * stays empty rather than drawing sessions it cannot know.
  */
 async function registerSessionsView(
   context: vscode.ExtensionContext,
@@ -283,96 +286,40 @@ async function registerSessionsView(
     return;
   }
 
-  const decorations = new SessionDecorations(core);
-  context.subscriptions.push(vscode.window.registerFileDecorationProvider(decorations));
-
-  // Two views, not two groups in one tree. A view header is always visible, carries
-  // its own count and its own empty state, and cannot be collapsed into the list
-  // above it — which is what the governed/ungoverned split needs to survive a
-  // sidebar someone has scrolled.
-  // One store for both views: each reading storage on its own tick would let the two
-  // lists briefly disagree about which groups exist.
+  // One store for the whole view: reading storage on each redraw would let the lists
+  // briefly disagree about which groups exist.
   const groups = new GroupStore(context.workspaceState);
   context.subscriptions.push(groups);
 
-  const governed = new SessionsProvider(core, 'governed', groups);
-  const unadopted = new SessionsProvider(core, 'unadopted', groups);
+  const panel = new MoonlightPanel(context, core, groups);
   context.subscriptions.push(
-    groups.onDidChange(() => {
-      governed.refresh();
-      unadopted.refresh();
+    vscode.window.registerWebviewViewProvider(PANEL_VIEW_ID, panel, {
+      // A note being written survives switching to another sidebar view and back.
+      webviewOptions: { retainContextWhenHidden: true },
     }),
-    // A grouping-mode change rearranges the tree, and nothing else would notice it
-    // until the next backend poll happened to fire.
+    groups.onDidChange(() => panel.refresh()),
+    // A grouping-mode or colour change rearranges the view, and nothing else would
+    // notice it until the next backend poll happened to fire.
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('moonlight.sessions.groupBy')) {
-        governed.refresh();
-        unadopted.refresh();
+      if (
+        e.affectsConfiguration('moonlight.sessions.groupBy') ||
+        e.affectsConfiguration('moonlight.accessibility.colorBlind')
+      ) {
+        panel.refresh();
       }
-    })
+    }),
+    /**
+     * Bring up a tab, on a session when one is named. How the other extensions open
+     * the sidebar: AI review's palette command lands here.
+     */
+    vscode.commands.registerCommand('moonlight.panel.show', (args?: { tab?: Tab; sessionId?: string }) =>
+      panel.show(args?.tab, args?.sessionId)
+    ),
+    /** Redraw now: the review changed, and the next fleet poll would be seconds away. */
+    vscode.commands.registerCommand('moonlight.panel.refresh', () => panel.refresh())
   );
-  const governedView = vscode.window.createTreeView('moonlight.governed', {
-    treeDataProvider: governed,
-    showCollapseAll: false,
-  });
-  const unadoptedView = vscode.window.createTreeView('moonlight.unadopted', {
-    treeDataProvider: unadopted,
-    showCollapseAll: false,
-  });
-  context.subscriptions.push(governedView, unadoptedView);
 
-
-  /**
-   * Context keys behind the welcome views.
-   *
-   * An empty tree cannot explain itself — "no sessions" and "no daemon" render as the
-   * same blank panel, and that ambiguity is exactly what cost an afternoon of
-   * debugging. A welcome view can say which it is and put the fix on a button.
-   */
-  const updateContext = (): void => {
-    void vscode.commands.executeCommand(
-      'setContext',
-      'moonlight.backendUp',
-      core.backendError() === undefined
-    );
-    void vscode.commands.executeCommand(
-      'setContext',
-      'moonlight.hasSessions',
-      core.sessions().length > 0
-    );
-  };
-
-  /**
-   * Counts on the headers, and the badge that survives a collapsed sidebar.
-   *
-   * The count sits in each view's `description` — beside the title, always visible,
-   * so "how many are ungoverned" is answerable without expanding anything. The badge
-   * is reserved for holds: it is the one number worth interrupting for, and it also
-   * shows on the activity-bar icon when the whole sidebar is shut.
-   */
-  const updateCounts = (): void => {
-    const governedCount = governed.sessions().length;
-    const unadoptedCount = unadopted.sessions().length;
-    governedView.description = governedCount > 0 ? String(governedCount) : undefined;
-    unadoptedView.description = unadoptedCount > 0 ? String(unadoptedCount) : undefined;
-
-    const waiting = core.heldApprovals?.().length ?? 0;
-    governedView.badge =
-      waiting > 0
-        ? { value: waiting, tooltip: `${waiting} session(s) waiting on you` }
-        : undefined;
-    // An ungoverned session is not an alert — nothing is blocked and nothing is
-    // waiting. Badging it would cry wolf next to the holds that genuinely need you.
-    unadoptedView.badge = undefined;
-  };
-
-  const redraw = (): void => {
-    governed.refresh();
-    unadopted.refresh();
-    decorations.refresh();
-    updateCounts();
-    updateContext();
-  };
+  const redraw = (): void => panel.refresh();
 
   /**
    * Adopt the new sessions this window owns, when the operator has asked for it.
@@ -439,7 +386,7 @@ async function registerSessionsView(
               // `moonlight.sessionControl.setPhase` takes no argument and re-resolves
               // the target itself, so it would have set the phase of whichever session
               // is active \u2014 quietly, and not the one just adopted.
-              void vscode.commands.executeCommand('moonlight.sessions.setPhase', nodeSession(session));
+              void vscode.commands.executeCommand('moonlight.sessions.setPhase', sessionNode(session));
             });
         } catch (err) {
           // Left in `attempted`: a failing adopt endpoint retried every five seconds is
@@ -475,7 +422,7 @@ async function registerSessionsView(
    * Switch the view to custom grouping after the operator makes or fills a group.
    *
    * Without this, creating a group while grouping by project files it somewhere the
-   * tree does not render — which reads as the group not having been created at all.
+   * view does not render — which reads as the group not having been created at all.
    * Only ever turns grouping *on*; it never overrides a deliberate `none`  back to
    * project, because that would undo a choice rather than complete one.
    */
@@ -656,7 +603,7 @@ async function registerSessionsView(
      * not be installed — checked rather than assumed, because a "command not found"
      * popup on a session that is genuinely stopped is a bad way to learn that.
      */
-    vscode.commands.registerCommand('moonlight.sessions.reviewPlan', async () => {
+    vscode.commands.registerCommand('moonlight.sessions.reviewPlan', async (sessionId?: unknown) => {
       const available = await vscode.commands.getCommands(true);
       if (!available.includes('moonlight.gate.reviewPlan')) {
         void vscode.window.showWarningMessage(
@@ -664,9 +611,33 @@ async function registerSessionsView(
         );
         return;
       }
-      await vscode.commands.executeCommand('moonlight.gate.reviewPlan');
+      await vscode.commands.executeCommand('moonlight.gate.reviewPlan', heldSessionId(sessionId));
+    }),
+
+    /** Answer a held action (not a plan), from the same extension and with the same check. */
+    vscode.commands.registerCommand('moonlight.sessions.answerHold', async (sessionId?: unknown) => {
+      const available = await vscode.commands.getCommands(true);
+      if (!available.includes('moonlight.gate.answerHold')) {
+        void vscode.window.showWarningMessage(
+          'MoonlightCode Agentic Support is not installed, so a held action cannot be answered from here. Install the MoonlightCode extension pack.'
+        );
+        return;
+      }
+      await vscode.commands.executeCommand('moonlight.gate.answerHold', heldSessionId(sessionId));
     })
   );
+}
+
+/**
+ * The session a hold command was given: an id from the panel, or a tree-style node from
+ * the palette or a menu. Anything else means "let agentic-support pick".
+ */
+function heldSessionId(arg: unknown): string | undefined {
+  if (typeof arg === 'string') {
+    return arg;
+  }
+  const session = (arg as { session?: { sessionId?: unknown } } | undefined)?.session;
+  return typeof session?.sessionId === 'string' ? session.sessionId : undefined;
 }
 
 export function deactivate(): void {}
@@ -674,7 +645,7 @@ export function deactivate(): void {}
 /**
  * The group id behind a context-menu invocation on a group row.
  *
- * The tree hands the command its node; only a custom group has an id to act on, and a
+ * The sidebar hands the command its node; only a custom group has an id to act on, and a
  * project group is derived from the session's own root rather than stored.
  */
 function groupIdOf(node: unknown): string | undefined {

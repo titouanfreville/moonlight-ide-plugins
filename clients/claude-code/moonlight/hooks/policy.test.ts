@@ -6,6 +6,7 @@ import {
   checkSandbox,
   gateFailure,
   isAllowedInPlan,
+  writesGateFiles,
   nextPhase,
   phaseFromToken,
   phaseLabel,
@@ -41,6 +42,12 @@ test('Plan allows listed tools only (deny by default)', () => {
   expect(isAllowedInPlan('RemoteTrigger')).toBe(false)
   expect(isAllowedInPlan('CronCreate')).toBe(false)
   expect(isAllowedInPlan('mcp__some_server__anything')).toBe(false)
+  // Jira, whatever the verb: planning work that never touches the code.
+  expect(isAllowedInPlan('mcp__claude_ai_Atlassian__getJiraIssue')).toBe(true)
+  expect(isAllowedInPlan('mcp__claude_ai_Atlassian__createJiraIssue')).toBe(true)
+  expect(isAllowedInPlan('mcp__claude_ai_Atlassian__atlassianUserInfo')).toBe(true)
+  expect(isAllowedInPlan('mcp__jira__create_issue')).toBe(true)
+  expect(isAllowedInPlan('mcp__claude_ai_Atlassian__createConfluencePage')).toBe(false)
   expect(isAllowedInPlan('mcp__notion__search', ['mcp__notion__search'])).toBe(true)
   expect(isAllowedInPlan('mcp__notion__search_all', ['mcp__notion__search'])).toBe(false)
 })
@@ -171,4 +178,19 @@ test('allowWriteBreach finds an allowWrite entry that opens a protected folder',
 test('ownedByAnyPhase: every entry any phase adds for this root', () => {
   const owned = ownedByAnyPhase(['.ai'], ['src', '.ai', 'README.md'])
   expect(owned.denyWrite).toEqual(['./.moonlight', './.claude/settings.json', './.claude/settings.local.json', './src', './README.md', './.ai'])
+})
+
+test('writesGateFiles: writes to the gate\'s own files, not reads, not other paths', () => {
+  expect(writesGateFiles('echo auto > ~/.moonlight/mod/projects/x/phase')).toBe(true)
+  expect(writesGateFiles("sed -i '' 's/a/b/' .claude/settings.local.json")).toBe(true)
+  expect(writesGateFiles('rm -rf .moonlight')).toBe(true)
+  expect(writesGateFiles('cd /tmp && sudo mv x ~/.moonlight/mod/projects/p/phase')).toBe(true)
+  expect(writesGateFiles('git checkout -- .claude/settings.json')).toBe(true)
+  // Reading them, or naming them in a script's text, is not a write.
+  expect(writesGateFiles('cd ~/.moonlight/mod/sessions && for d in */; do cat $d/state.json; done')).toBe(false)
+  expect(writesGateFiles("python3 - <<'EOF'\nprint('see .claude/settings.json')\nEOF")).toBe(false)
+  expect(writesGateFiles('cat ~/.moonlight/mod/sessions/s1/state.json')).toBe(false)
+  expect(writesGateFiles('cat .claude/settings.json | jq .sandbox')).toBe(false)
+  expect(writesGateFiles('gh pr view 12 > /tmp/pr.txt')).toBe(false)
+  expect(writesGateFiles('npx nx run-many -t test 2>&1 | tail')).toBe(false)
 })

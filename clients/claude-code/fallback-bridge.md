@@ -17,9 +17,11 @@ Per session, under `~/.moonlight/mod/sessions/<session id>/`, beside the heartbe
 | File | Written by | Content |
 |---|---|---|
 | `heartbeat` | mod, every 2 s | a timestamp; older than 10 s means no live mod |
-| `state.json` | mod, while it governs, on change | `{ v: 1, sessionId, root, phase, pending: {to, reason} \| null, plan: {version, title, markdown, decided?} \| null, review, updatedMs }` |
+| `state.json` | mod, while it governs, on change | `{ v: 1, sessionId, root, title, phase, pending: {to, reason} \| null, plan: {version, title, markdown, decided?} \| null, review, updatedMs }` |
 | `inbox/<entry>.json` | IDE, one decision each | `{ v: 1, kind, ... }`: see the kinds below |
 | `outbox/<entry>.json` | mod | `{ v: 1, ok, message }` |
+
+`title` is the session's name for the session lists, as Claude Code shows it: the operator's rename, else the title Claude Code generated (both read from the transcript), else the first line of the operator's first prompt; `null` until then, and the IDEs show the folder name.
 
 ### `review`
 
@@ -41,7 +43,7 @@ Per session, under `~/.moonlight/mod/sessions/<session id>/`, beside the heartbe
 | `review-comment-edit` / `review-uncomment` | `id` (+ `body`) | edits or removes one |
 | `review-submit` | `summary?` | sends the comments and kept findings to the agent as one prompt |
 | `review-accept` | | closes the review (refused while comments or kept findings are pending) |
-| `review-accept-file` | `path` | "Mark reviewed": drops that file's baseline (session scope only) |
+| `review-accept-file` | `path` | "Mark reviewed": the file's baseline becomes its current content (session scope only), so it leaves the list and comes back with its next change, whatever tool makes it |
 | `review-run` / `review-cancel` | `skill` | runs an installed review skill, or frees a run that will not answer |
 | `review-scope` | `scope`: `session` or `head` | what the review covers: this session's changes, or everything since the last commit |
 | `finding` | `id`, `decision`, `note?` | triage; a note keeps the finding |
@@ -59,7 +61,7 @@ The mod writes `state.json` before the answers, so an IDE that reads its answer 
 - **Holds**: an undecided plan becomes a plan hold (it opens the plan panel), else a pending phase request becomes an action hold (Allow / Refuse).
 - **Writes**: `governor(sessionId)` says where a decision goes; `sendToMod` writes the entry and waits for the answer.
 - **Status bar**: a session the mod governs shows its phase with `· plugin`, whatever the daemon's state.
-- **Review**: the review queue lists the mod's files beside the daemon's; the diff's before side is the saved copy (or HEAD); comments go to the mod. Under the mod, Reject sends its message as a file comment at once (a blank one sends nothing) and takes the file out of the queue, as Mark reviewed does; Ignore is not offered, and threads take no replies and no resolve.
+- **Review**: the review queue lists the mod's files beside the daemon's; the diff's before side is the saved copy (or HEAD); comments go to the mod. Under the mod, Reject sends its message as a file comment at once and the file stays in the queue (a blank Reject is refused); Ignore is not offered, and threads take no replies and no resolve.
 - **AI review**: VS Code's **MoonlightCode: Open AI Review** panel and JetBrains' **AI Review** tab run a review skill and triage its findings, then **Send review** or **Accept**.
 
 ## Not covered

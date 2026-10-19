@@ -52,7 +52,10 @@ object ModBridge {
             val version = (p["version"] as? Number)?.toInt() ?: return@let null
             ModState.Plan(version, p["title"] as? String ?: "", p["markdown"] as? String ?: "", p["decided"] as? String)
         }
-        return ModState(sessionId, s["root"] as? String, phase, pending, plan, (s["review"] as? Map<*, *>)?.let(::parseReview))
+        return ModState(
+            sessionId, s["root"] as? String, phase, pending, plan, (s["review"] as? Map<*, *>)?.let(::parseReview),
+            (s["title"] as? String)?.takeIf { it.isNotBlank() },
+        )
     }
 
     /** The `review` section: what the mod's Review panel holds. Unknown fields are skipped. */
@@ -101,7 +104,8 @@ object ModBridge {
     /** A mod session as the session lists show it: governed, so adopted; waiting when it holds. */
     fun session(state: ModState): DiscoverableSession = DiscoverableSession(
         sessionId = state.sessionId,
-        title = state.root?.let { "${Path.of(it).name} (Claude Code plugin)" } ?: "Claude Code plugin",
+        // Its name, as the daemon's sessions show theirs; the folder until it has one.
+        title = state.title ?: state.root?.let { "${Path.of(it).name} (Claude Code plugin)" } ?: "Claude Code plugin",
         root = state.root,
         adopted = true,
         status = if (hold(state, 0) != null) SessionStatus.WaitingInput else SessionStatus.Running,
@@ -179,6 +183,8 @@ data class ModState(
     val plan: Plan?,
     /** Absent from a mod that predates the review bridge. */
     val review: ModReview? = null,
+    /** The session's name; null until it has one, and from a mod that predates it. */
+    val title: String? = null,
 ) {
     data class Pending(val to: Phase, val reason: String)
     data class Plan(val version: Int, val title: String, val markdown: String, val decided: String?)

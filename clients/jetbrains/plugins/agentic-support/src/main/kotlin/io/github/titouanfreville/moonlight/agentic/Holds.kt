@@ -217,7 +217,7 @@ class AgenticStartup : ProjectActivity {
  * else whichever is blocked. The id Session Control's row double-click invokes.
  */
 class AnswerSessionHoldAction : AnAction(), DumbAware {
-    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
         e.presentation.isEnabledAndVisible = e.project != null
@@ -238,7 +238,7 @@ class AnswerSessionHoldAction : AnAction(), DumbAware {
 }
 
 class AnswerAnyHoldAction : AnAction(), DumbAware {
-    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun actionPerformed(e: AnActionEvent) {
         Holds.answerAny(e.project ?: return)
@@ -247,7 +247,7 @@ class AnswerAnyHoldAction : AnAction(), DumbAware {
 
 /** Open the plan of the session you are in — or the blocked one — whether or not it is held. */
 class OpenPlanAction : AnAction(), DumbAware {
-    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return

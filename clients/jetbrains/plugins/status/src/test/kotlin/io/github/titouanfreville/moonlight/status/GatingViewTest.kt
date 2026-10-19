@@ -117,7 +117,7 @@ class GatingViewTest {
     fun `a writing phase is calm`() {
         val v = view(listOf(session("s1")), ActiveSession("s1", ActiveSession.How.Owned))
         assertEquals(GatingIcon.Governed, v.icon)
-        assertEquals("AutoImplement", v.text)
+        assertEquals("Auto", v.text)
         assertFalse(v.warn)
         assertEquals(GatingAction.SetPhase, v.action)
     }
@@ -125,7 +125,7 @@ class GatingViewTest {
     /** A guess is labelled in the bar itself, not only in a tooltip nobody hovers. */
     @Test
     fun `a guessed session says so in the bar`() {
-        assertEquals("AutoImplement · guess", view(listOf(session("s1")), ActiveSession("s1", ActiveSession.How.Sole)).text)
+        assertEquals("Auto · guess", view(listOf(session("s1")), ActiveSession("s1", ActiveSession.How.Sole)).text)
     }
 
     /** The positive evidence the inference went wrong: something else here is working. */
@@ -134,7 +134,7 @@ class GatingViewTest {
         val shown = session("s1", status = SessionStatus.Idle)
         val busy = session("s2", adopted = false, status = SessionStatus.Running)
         val v = view(listOf(shown, busy), ActiveSession("s1", ActiveSession.How.Pinned))
-        assertEquals("AutoImplement · which session?", v.text)
+        assertEquals("Auto · which session?", v.text)
         assertTrue(v.warn)
         assertEquals(GatingAction.SetActive, v.action)
         assertTrue(v.tooltip.any { "NOT adopted" in it })
@@ -144,7 +144,7 @@ class GatingViewTest {
     fun `a session busy in another project is not evidence`() {
         val shown = session("s1")
         val elsewhere = session("s2", status = SessionStatus.Running, root = "/other/repo")
-        assertEquals("AutoImplement", view(listOf(shown, elsewhere), ActiveSession("s1", ActiveSession.How.Owned)).text)
+        assertEquals("Auto", view(listOf(shown, elsewhere), ActiveSession("s1", ActiveSession.How.Owned)).text)
     }
 
     @Test

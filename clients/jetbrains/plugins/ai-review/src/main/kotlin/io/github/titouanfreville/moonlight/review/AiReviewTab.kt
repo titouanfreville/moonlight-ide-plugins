@@ -57,7 +57,7 @@ class AiReviewTab : MoonlightToolWindowTab {
     override val icon: javax.swing.Icon = AllIcons.Actions.IntentionBulb
 
     override fun createComponent(project: Project, toolWindow: ToolWindow, parent: Disposable): JComponent =
-        AiReviewPanel(project).also { Disposer.register(parent, it) }
+        AiReviewPanel(project, toolWindow).also { Disposer.register(parent, it) }
 
     companion object {
         const val TITLE = "AI Review"
@@ -79,8 +79,9 @@ private class SessionChoice(val sessionId: String, val label: String) {
     override fun toString() = label
 }
 
-internal class AiReviewPanel(private val project: Project) : JPanel(BorderLayout()), Disposable {
+internal class AiReviewPanel(private val project: Project, private val toolWindow: ToolWindow) : JPanel(BorderLayout()), Disposable {
     private val core = MoonlightApi.getInstance()
+    private val selection = SessionsSelection(project)
     private val sessions = ComboBox(DefaultComboBoxModel<SessionChoice>())
     private val skills = ComboBox(DefaultComboBoxModel<String>())
     // What the run reviews: an empty scope gives the skill nothing to read.
@@ -88,14 +89,18 @@ internal class AiReviewPanel(private val project: Project) : JPanel(BorderLayout
     private var settingScope = false
     private val run = JButton(AllIcons.Actions.Execute)
     private val cancel = JButton(AllIcons.Actions.Suspend)
-    // Wrapped: a run's status can be a long refusal or error from the mod.
+    // Wrapped: a run's status can be a long refusal or error from the mod, or the reviewer's
+    // whole summary. It sits in its own pane, scrolled and resizable, so a long one never
+    // pushes the findings out of the window.
     private val status = JBTextArea().apply {
         isEditable = false
         lineWrap = true
         wrapStyleWord = true
         isOpaque = false
         font = JBUI.Fonts.label()
+        border = JBUI.Borders.empty(4, 8)
     }
+    private val statusPane = JBScrollPane(status).apply { border = JBUI.Borders.empty() }
     private val model = CollectionListModel<ModFinding>()
     private val list = JBList(model)
     private val keep = JButton(AllIcons.General.Add)
@@ -146,7 +151,6 @@ internal class AiReviewPanel(private val project: Project) : JPanel(BorderLayout
         val head = JPanel(BorderLayout()).apply {
             add(sessionRow, BorderLayout.NORTH)
             add(runRow, BorderLayout.CENTER)
-            add(status.apply { border = JBUI.Borders.empty(0, 8, 4, 8) }, BorderLayout.SOUTH)
         }
         sessions.prototypeDisplayValue = SessionChoice("", "A session label")
         skills.prototypeDisplayValue = "a-review-skill"
@@ -176,14 +180,22 @@ internal class AiReviewPanel(private val project: Project) : JPanel(BorderLayout
         detail.addHyperlinkListener { e ->
             if (e.eventType == HyperlinkEvent.EventType.ACTIVATED) list.selectedValue?.let(::openFinding)
         }
-        add(OnePixelSplitter(true, 0.5f).apply {
-            firstComponent = JBScrollPane(list)
-            secondComponent = JBScrollPane(detail)
+        // Status above the findings, drag the divider to give it room; the split is remembered.
+        add(OnePixelSplitter(true, "moonlight.aiReview.statusSplit", 0.2f).apply {
+            firstComponent = statusPane
+            secondComponent = OnePixelSplitter(true, 0.5f).apply {
+                firstComponent = JBScrollPane(list)
+                secondComponent = JBScrollPane(detail)
+            }
         }, BorderLayout.CENTER)
         add(JPanel(BorderLayout()).apply { add(findingActions, BorderLayout.NORTH); add(foot, BorderLayout.SOUTH) }, BorderLayout.SOUTH)
 
         sessions.addActionListener { render() }
-        scope.renderer = com.intellij.ui.SimpleListCellRenderer.create("") { SCOPES[it].orEmpty() }
+        scope.renderer = object : com.intellij.ui.SimpleListCellRenderer<String>() {
+            override fun customize(list: JList<out String>, value: String?, index: Int, selected: Boolean, hasFocus: Boolean) {
+                text = value?.let { SCOPES[it] }.orEmpty()
+            }
+        }
         scope.addActionListener {
             if (!settingScope) (scope.selectedItem as? String)?.let { act(ModEntry.ReviewScope(it)) }
         }
@@ -200,6 +212,8 @@ internal class AiReviewPanel(private val project: Project) : JPanel(BorderLayout
             // The mod republishes its review every two seconds at most; the poll carries it.
             override fun sessionsChanged() = render()
         })
+        // Opening the tab catches up with a session picked in Sessions since the last poll.
+        whenTabShown(toolWindow, this, this) { render() }
         project.putUserData(AiReviewTab.PANEL, this)
         render()
     }
@@ -210,7 +224,11 @@ internal class AiReviewPanel(private val project: Project) : JPanel(BorderLayout
     fun render() {
         val all = core.sessions()
         val mod = all.filter { ReviewSource.isModSession(it.sessionId) }
+        // An explicit request first, then a session newly picked in Sessions, when it has a review here.
+        // Read the pick even when a request wins, so it does not come back on the next render.
+        val fromSessions = selection.fresh { id -> mod.any { it.sessionId == id } }
         val requested = project.getUserData(AiReviewTab.REQUESTED)?.also { project.putUserData(AiReviewTab.REQUESTED, null) }
+            ?: fromSessions
         val keepSession = requested ?: selectedSession() ?: core.activeSession(project)?.sessionId
         val choices = mod.map { SessionChoice(it.sessionId, sessionLabel(it, all)) }
         if (choices.map { it.sessionId } != (0 until sessions.itemCount).map { sessions.getItemAt(it).sessionId }) {
@@ -222,24 +240,25 @@ internal class AiReviewPanel(private val project: Project) : JPanel(BorderLayout
         val sessionId = selectedSession()
         val review = sessionId?.let { ReviewSource.modReview(it) }
         if (review == null) {
-            status.text = if (mod.isEmpty()) {
+            showStatus(if (mod.isEmpty()) {
                 "AI review runs in sessions the MoonlightCode plugin for Claude Code governs, and none is running."
             } else {
                 "This session's Claude Code plugin publishes no review yet: update the plugin."
-            }
+            })
             model.replaceAll(emptyList())
             listOf(scope, skills, run, cancel, send, accept).forEach { it.isEnabled = false }
             counts.text = ""
+            MoonlightToolWindow.setBadge(toolWindow, this, null)
             renderSelection()
             return
         }
         val running = review.runningSkill
-        status.text = when {
+        showStatus(when {
             running != null -> "Running $running… its findings land here."
-            review.findingsStatus != null -> review.findingsStatus
+            review.findingsStatus != null -> review.findingsStatus.orEmpty()
             review.skills.isEmpty() -> "No review skill is installed in this session."
-            else -> " "
-        }
+            else -> ""
+        })
         if (scope.selectedItem != review.scope) {
             settingScope = true
             scope.selectedItem = review.scope
@@ -263,6 +282,8 @@ internal class AiReviewPanel(private val project: Project) : JPanel(BorderLayout
         counts.text = "${c.kept} kept · ${c.dismissed} dismissed · ${c.comments} line comment${if (c.comments == 1) "" else "s"}"
         labels[send] = "Send review ($pending)"
         relabel()
+        // The tab says what waits to be sent, as Review says what waits to be read.
+        MoonlightToolWindow.setBadge(toolWindow, this, if (pending > 0) "$pending" else null, if (pending > 0) "$pending to send" else null)
         send.isEnabled = pending > 0 && !busy
         accept.isEnabled = pending == 0 && !busy
         accept.toolTipText = if (pending > 0) "Send or dismiss what is pending first" else labels[accept]
@@ -324,11 +345,28 @@ internal class AiReviewPanel(private val project: Project) : JPanel(BorderLayout
         }
     }
 
+    /**
+     * The status pane, only when it has something to say: a blank one would take the split's
+     * room. Set on change only — the poll re-renders every few seconds, and resetting the
+     * text would scroll the operator back to the top mid-read.
+     */
+    private fun showStatus(text: String) {
+        if (status.text != text) {
+            status.text = text
+            status.caretPosition = 0
+        }
+        val visible = text.isNotBlank()
+        if (statusPane.isVisible != visible) {
+            statusPane.isVisible = visible
+            statusPane.parent?.revalidate()
+        }
+    }
+
     /** Summary, detail, fix and note, wrapped; the place links to the file at that line. */
     private fun detailHtml(f: ModFinding): String {
         fun esc(s: String) = StringUtil.escapeXmlEntities(s).replace("\n", "<br>")
         val parts = buildList {
-            add("<b>${esc(f.severity.replaceFirstChar { it.uppercase() })}</b> · <a href=\"open\">${esc("${f.file}:${f.line}")}</a> · ${esc(f.route)}" +
+            add("<b>${esc(Palette.severityMark(f.severity) + " " + f.severity.replaceFirstChar { it.uppercase() })}</b> · <a href=\"open\">${esc("${f.file}:${f.line}")}</a> · ${esc(f.route)}" +
                 if (f.decision == "dismiss") " · <i>dismissed</i>" else "")
             add("<p><b>${esc(f.summary)}</b></p>")
             if (f.detail.isNotBlank()) add("<p>${esc(f.detail)}</p>")
@@ -375,13 +413,10 @@ internal class AiReviewPanel(private val project: Project) : JPanel(BorderLayout
 private class FindingRenderer : ColoredListCellRenderer<ModFinding>() {
     override fun customizeCellRenderer(list: JList<out ModFinding>, value: ModFinding, index: Int, selected: Boolean, hasFocus: Boolean) {
         val dismissed = value.decision == "dismiss"
-        val color = when (value.severity) {
-            "high" -> JBColor.RED
-            "medium" -> JBColor.ORANGE
-            else -> JBColor.BLUE
-        }
         val style = if (dismissed) SimpleTextAttributes.STYLE_STRIKEOUT else SimpleTextAttributes.STYLE_BOLD
-        append(value.severity.replaceFirstChar { it.uppercase() } + "  ", SimpleTextAttributes(style, color))
+        // The mark says it without colour; the colour follows the IDE's colour-blind setting.
+        val label = "${Palette.severityMark(value.severity)} ${value.severity.replaceFirstChar { it.uppercase() }}  "
+        append(label, SimpleTextAttributes(style, Palette.severity(value.severity)))
         append("${value.file}:${value.line}  ", SimpleTextAttributes.GRAYED_ATTRIBUTES)
         append(value.summary, if (dismissed) SimpleTextAttributes.GRAYED_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
         value.note?.let { append("   ✎ $it", SimpleTextAttributes.GRAYED_ITALIC_ATTRIBUTES) }

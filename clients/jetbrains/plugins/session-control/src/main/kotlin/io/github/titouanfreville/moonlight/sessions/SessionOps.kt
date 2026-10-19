@@ -97,18 +97,25 @@ object SessionOps {
 
     fun pickPhase(project: Project, session: DiscoverableSession) {
         val label = sessionLabel(session, core.sessions())
-        pick(project, "Move \"$label\" from ${session.phase} to…", Phase.ORDERED.map { phase ->
+        pick(project, "Move \"$label\" from ${phaseLabel(session.phase)} to…", Phase.ORDERED.map { phase ->
             Choice(
-                phase.name + if (phase == session.phase) " (current)" else "",
+                phaseLabel(phase) + if (phase == session.phase) " (current)" else "",
                 if (phase.frozen) "project writes denied" else "project writes allowed",
                 phase,
             )
-        }) { phase ->
-            background(project) {
-                setSessionPhase(session.sessionId, phase)
-                core.refresh()
-                info(project, "\"$label\" → ${phase.name}. The phase is pinned now: a manual pick overrides auto-advance.")
-            }
+        }) { phase -> movePhase(project, session, phase) }
+    }
+
+    /**
+     * Move a session to `phase` without asking — the phase rail's click, where the pick is the
+     * click. Picking the current phase pins it, as the picker's "(current)" choice does.
+     */
+    fun movePhase(project: Project, session: DiscoverableSession, phase: Phase) {
+        val label = sessionLabel(session, core.sessions())
+        background(project) {
+            setSessionPhase(session.sessionId, phase)
+            core.refresh()
+            info(project, "\"$label\" → ${phaseLabel(phase)}. The phase is pinned now: a manual pick overrides auto-advance.")
         }
     }
 
@@ -165,7 +172,7 @@ object SessionOps {
         val choices = (here + (all - here.toSet())).map { s ->
             Choice<String?>(
                 (if (s.sessionId == current) "✓ " else "") + sessionLabel(s, all),
-                "${if (s.adopted) s.phase.name else "not governed"} · ${s.status} · ${s.root ?: s.sessionId}",
+                "${if (s.adopted) phaseLabel(s.phase) else "not governed"} · ${s.status} · ${s.root ?: s.sessionId}",
                 s.sessionId,
             )
         } + Choice<String?>("Clear pin", "fall back to detecting it automatically", null)
@@ -330,7 +337,7 @@ object SessionOps {
         pick(project, title, adopted.map { s ->
             Choice(
                 sessionLabel(s, adopted),
-                "phase: ${s.phase}${if (s.phase.frozen) " (project writes DENIED)" else ""} · ${s.root ?: s.sessionId}",
+                "phase: ${phaseLabel(s.phase)}${if (s.phase.frozen) " (project writes DENIED)" else ""} · ${s.root ?: s.sessionId}",
                 s,
             )
         }, then)

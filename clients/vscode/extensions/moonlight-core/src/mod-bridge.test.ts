@@ -46,6 +46,7 @@ test('a mod session reads as governed, waiting when it holds', () => {
   assert.equal(s.phase, 'Test');
   assert.equal(s.status, 'Running');
   assert.equal(s.title, 'app (Claude Code plugin)');
+  assert.equal(modSession(state({ title: 'Add Jira to plan' })).title, 'Add Jira to plan');
   assert.equal(modSession(state({ pending: { to: 'auto', reason: '' } })).status, 'WaitingInput');
 });
 

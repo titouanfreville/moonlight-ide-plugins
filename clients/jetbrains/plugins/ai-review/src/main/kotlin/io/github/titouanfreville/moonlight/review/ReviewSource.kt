@@ -137,17 +137,15 @@ object ReviewSource {
     }
 
     /**
-     * Under the mod, a reject is a comment on the file, sent at once. As under the daemon,
-     * the file leaves the queue; a blank reject sends nothing. Leaving the queue takes a new
-     * baseline, so the agent's fix is what the next review shows.
+     * Under the mod, a reject is a comment on the file, sent at once. The file stays in the
+     * queue, so the agent's fix is reviewed against the same starting point. A blank reject
+     * would change nothing, so it is refused.
      */
     fun reject(sessionId: String, filePath: String, message: String): RejectResponse {
         if (!isModSession(sessionId)) return core.control.reject(sessionId, filePath, message)
-        if (message.isNotBlank()) {
-            addComment(sessionId, CommentScope.File, filePath, DiffSide.After, 0, 0, message)
-            send(sessionId, ModEntry.ReviewSubmit())
-        }
-        accept(sessionId, filePath)
+        if (message.isBlank()) throw IllegalStateException("Write what the session should do about this file: a reject without a message changes nothing.")
+        addComment(sessionId, CommentScope.File, filePath, DiffSide.After, 0, 0, message)
+        send(sessionId, ModEntry.ReviewSubmit())
         return RejectResponse(false, FeedbackDelivery.Queued)
     }
 
