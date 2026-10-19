@@ -89,7 +89,10 @@ fn classify_mcp_tool(name: &str) -> DangerClass {
     }
     let verb = tool.split(['_', '-']).next().unwrap_or("");
     // A camelCase name (`searchJiraIssuesUsingJql`) leads with its verb as well.
-    let verb = verb.split(|c: char| c.is_ascii_uppercase()).next().unwrap_or("");
+    let verb = verb
+        .split(|c: char| c.is_ascii_uppercase())
+        .next()
+        .unwrap_or("");
     if MCP_READ_VERBS.contains(&verb) {
         DangerClass::Safe
     } else {
