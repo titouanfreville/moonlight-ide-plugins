@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as controlApi from 'moonlight-control-client';
-import type { OwnedTerminals } from './api';
+import type { OwnedTerminals, StartOptions } from './api';
 
 /**
  * Terminals this extension family started, by session id.
@@ -29,7 +29,7 @@ export class SessionTerminals implements OwnedTerminals {
     );
   }
 
-  start(sessionId: string, cwd: string | undefined): vscode.Terminal {
+  start(sessionId: string, cwd: string | undefined, options: StartOptions = {}): vscode.Terminal {
     const terminal = vscode.window.createTerminal({
       name: `Claude (${sessionId.slice(0, 8)})`,
       cwd,
@@ -38,7 +38,7 @@ export class SessionTerminals implements OwnedTerminals {
     // The command is typed once the MCP endpoint is bound, which needs a round-trip.
     // The terminal is created and shown first so the operator sees the session coming
     // up rather than an empty pause.
-    void this.launch(terminal, sessionId);
+    void this.launch(terminal, sessionId, options.daemon !== false);
     terminal.show();
     return terminal;
   }
@@ -57,8 +57,7 @@ export class SessionTerminals implements OwnedTerminals {
    * the MCP transport) still gets a session, with a warning that says what is missing.
    * Refusing to start would be a worse trade.
    */
-  private async launch(terminal: vscode.Terminal, sessionId: string): Promise<void> {
-    let flags = '';
+  private async launch(terminal: vscode.Terminal, sessionId: string, daemon: boolean): Promise<void> {
     // The id is ours (minted below), but it is interpolated into a shell line, so it is
     // checked rather than trusted — a session id that is not the shape we mint means
     // something upstream changed, and the right move is to not build a command from it.
@@ -68,24 +67,9 @@ export class SessionTerminals implements OwnedTerminals {
       );
       return;
     }
-    try {
-      const { url } = await controlApi.mcpEndpoint(sessionId);
-      const flag = controlApi.mcpConfigFlag(url);
-      if (flag === undefined) {
-        // A non-loopback or non-http endpoint is not something we put on a command
-        // line. Launch without the verbs and say so, rather than running it.
-        void vscode.window.showWarningMessage(
-          `MoonlightCode: refusing an unexpected MCP endpoint (${url}). The session starts without the moonlight verbs.`
-        );
-      } else {
-        flags = flag;
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      void vscode.window.showWarningMessage(
-        `MoonlightCode: no MCP endpoint for this session (${message}). It starts without the moonlight verbs — it cannot propose a plan or request a phase.`
-      );
-    }
+    // Without a daemon the Claude Code plugin governs, with its own verbs: nothing to bind.
+    const url = daemon ? await daemonMcpUrl(sessionId) : undefined;
+    const flags = url ? controlApi.mcpConfigFlag(url) ?? '' : '';
     // `--session-id` pins the id, the same flag the desktop app uses, so the session
     // we start is the session we can adopt, govern and deliver reviews to. The launch id
     // exported with it is what keeps the verbs working after `/resume` or `/clear`.
@@ -106,5 +90,32 @@ export class SessionTerminals implements OwnedTerminals {
 
   adopt(sessionId: string, terminal: vscode.Terminal): void {
     this.owned.set(sessionId, terminal);
+  }
+}
+
+/**
+ * The daemon's MCP endpoint for a session we are about to start, or `undefined` — said to
+ * the operator, since a session without it is gated but has no `moonlight` verbs.
+ *
+ * Best-effort, like the desktop app: a backend too old to bind one (or built without the
+ * MCP transport) still gets a session, with a warning that says what is missing.
+ */
+export async function daemonMcpUrl(sessionId: string): Promise<string | undefined> {
+  try {
+    const { url } = await controlApi.mcpEndpoint(sessionId);
+    if (controlApi.safeEndpointUrl(url) === undefined) {
+      // A non-loopback or non-http endpoint is not something we put on a command line.
+      void vscode.window.showWarningMessage(
+        `MoonlightCode: refusing an unexpected MCP endpoint (${url}). The session starts without the moonlight verbs.`
+      );
+      return undefined;
+    }
+    return url;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    void vscode.window.showWarningMessage(
+      `MoonlightCode: no MCP endpoint for this session (${message}). It starts without the moonlight verbs — it cannot propose a plan or request a phase.`
+    );
+    return undefined;
   }
 }

@@ -31,8 +31,45 @@
         <action id="Moonlight.SessionControl.StartSession"
                 class="io.github.titouanfreville.moonlight.sessions.StartSessionAction"
                 text="MoonlightCode: Start Governed Claude Session"
-                description="Start Claude Code in a terminal MoonlightCode owns, and adopt it"
-                icon="AllIcons.Actions.Execute"/>
+                description="Start Claude Code in an IDE terminal or a herdr pane, governed from its first line"
+                icon="AllIcons.Actions.Execute">
+            <!-- One modifier more than VS Code's comment-on-selection (Ctrl+Alt+M): the same family. -->
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift M"/>
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift M"/>
+            <keyboard-shortcut keymap="Mac OS X 10.5+" first-keystroke="meta alt shift M"/>
+        </action>
+        <action id="Moonlight.SessionControl.ShowInHerdr"
+                class="io.github.titouanfreville.moonlight.sessions.ShowInHerdrAction"
+                text="MoonlightCode: Show Session in herdr"
+                description="Bring this session's herdr pane forward"
+                icon="AllIcons.Debugger.Console"/>
+        <action id="Moonlight.SessionControl.HideSession"
+                class="io.github.titouanfreville.moonlight.sessions.HideSessionAction"
+                text="MoonlightCode: Hide Session in This Project"
+                description="Hide this session here until it works again"
+                icon="AllIcons.Actions.ToggleVisibility"/>
+        <action id="Moonlight.SessionControl.ForgetSession"
+                class="io.github.titouanfreville.moonlight.sessions.ForgetSessionAction"
+                text="MoonlightCode: Forget Session…"
+                description="Delete the daemon's record of this session; the transcript stays"
+                icon="AllIcons.Actions.GC"/>
+        <action id="Moonlight.SessionControl.HideEndedInGroup"
+                class="io.github.titouanfreville.moonlight.sessions.HideEndedInGroupAction"
+                text="Hide Ended Sessions"
+                description="Hide this group's sessions that are neither working nor waiting on you"/>
+        <action id="Moonlight.SessionControl.ForgetEndedInGroup"
+                class="io.github.titouanfreville.moonlight.sessions.ForgetEndedInGroupAction"
+                text="Forget Ended Sessions…"
+                description="Forget this group's ended sessions in the daemon; transcripts stay"/>
+        <action id="Moonlight.SessionControl.ShowHidden"
+                class="io.github.titouanfreville.moonlight.sessions.ShowHiddenAction"
+                text="MoonlightCode: Show Hidden Sessions"
+                description="Show sessions hidden in this project again"
+                icon="AllIcons.Actions.Show"/>
+        <action id="Moonlight.SessionControl.RemoveEmptyGroups"
+                class="io.github.titouanfreville.moonlight.sessions.RemoveEmptyGroupsAction"
+                text="MoonlightCode: Remove Empty Session Groups"
+                description="Remove custom groups none of whose sessions is listed any more"/>
         <action id="Moonlight.SessionControl.Resume"
                 class="io.github.titouanfreville.moonlight.sessions.ResumeSessionAction"
                 text="MoonlightCode: Resume Session"
@@ -99,6 +136,8 @@
             <reference ref="Moonlight.SessionControl.NewGroup"/>
             <reference ref="Moonlight.SessionControl.Resume"/>
             <reference ref="Moonlight.SessionControl.AutoResume"/>
+            <reference ref="Moonlight.SessionControl.ShowHidden"/>
+            <reference ref="Moonlight.SessionControl.RemoveEmptyGroups"/>
             <separator/>
             <reference ref="Moonlight.SessionControl.Adopt"/>
             <reference ref="Moonlight.SessionControl.SetPhase"/>
@@ -109,6 +148,7 @@
         <group id="Moonlight.Sessions.Popup">
             <reference ref="Moonlight.SessionControl.ReviewPlan"/>
             <reference ref="Moonlight.SessionControl.Resume"/>
+            <reference ref="Moonlight.SessionControl.ShowInHerdr"/>
             <reference ref="Moonlight.SessionControl.Adopt"/>
             <reference ref="Moonlight.SessionControl.SetPhase"/>
             <reference ref="Moonlight.SessionControl.AdvancePhase"/>
@@ -118,6 +158,11 @@
             <reference ref="Moonlight.SessionControl.RemoveFromGroup"/>
             <reference ref="Moonlight.SessionControl.RenameGroup"/>
             <reference ref="Moonlight.SessionControl.DeleteGroup"/>
+            <separator/>
+            <reference ref="Moonlight.SessionControl.HideSession"/>
+            <reference ref="Moonlight.SessionControl.ForgetSession"/>
+            <reference ref="Moonlight.SessionControl.HideEndedInGroup"/>
+            <reference ref="Moonlight.SessionControl.ForgetEndedInGroup"/>
         </group>
     </actions>
 </idea-plugin>

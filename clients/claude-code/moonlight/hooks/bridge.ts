@@ -4,6 +4,8 @@
 // The mod cannot listen, so the two meet in files, per session, under
 // ~/.moonlight/mod/sessions/<id>/ (the gate refuses the agent there):
 // - state.json: what the IDE panels show, written by the mod while it governs;
+// - review.json: the review alone (v, sessionId, root, title, review), written
+//   instead while the daemon governs; the inbox then takes review entries only;
 // - inbox/<entry>.json: one operator decision each, written by the IDE;
 // - outbox/<entry>.json: the mod's answer to it. An entry with an answer is
 //   done; the IDE removes both files once it has read the answer.

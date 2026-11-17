@@ -47,16 +47,21 @@ object SessionOps {
     /** Adopt a session, from a row or a picker of the unadopted ones. */
     fun adopt(project: Project, session: DiscoverableSession?) {
         if (session != null) {
+            if (core.governor(session.sessionId) == Governor.Mod) {
+                info(project, MOD_GOVERNED_ADOPT)
+                return
+            }
             doAdopt(project, session, linkPanel = false)
             return
         }
         val all = core.sessions()
-        val candidates = all.filter { !it.adopted }
+        // A session the mod governs keeps its own gate: not a candidate.
+        val candidates = all.filter { !it.adopted && core.governor(it.sessionId) != Governor.Mod }
         if (candidates.isEmpty()) {
             info(
                 project,
                 if (all.isEmpty()) "No Claude Code sessions detected yet. Run `claude` somewhere and wait a few seconds."
-                else "Every detected session is already adopted.",
+                else "Every detected session is already governed, by the daemon or by the MoonlightCode plugin inside Claude Code.",
             )
             return
         }
@@ -195,16 +200,143 @@ object SessionOps {
     }
 
     /**
-     * Start Claude Code in a terminal MoonlightCode owns, then adopt it.
+     * Start a Claude Code session MoonlightCode owns from its first line: in an IDE terminal,
+     * or in a herdr pane that outlives the IDE. In step with VS Code's `start-session.ts`.
      *
-     * Starting a session through MoonlightCode *is* the decision to govern it. Adoption has
-     * to wait for detection to see the session, though — the engine drops an adopt for a
-     * session not yet in the fleet — so this waits for it rather than firing into the void.
+     * The id is minted here and pinned with `--session-id`, so the session we start is the
+     * one we govern and deliver reviews to. What follows depends on who governs: the daemon
+     * adopts it once detection sees it (the engine drops an adopt for a session not yet in
+     * the fleet); the Claude Code plugin governs every session it runs in, so there is
+     * nothing to adopt. Call on the EDT.
      */
-    fun startSession(project: Project) {
+    fun startSession(project: Project, asked: Host? = null) {
+        val governor = governorFor(core.backendError(), core.claudeMod())
+        if (governor == StartGovernor.None) {
+            val go = Messages.showOkCancelDialog(
+                project,
+                "No MoonlightCode daemon is answering and the Claude Code plugin is not enabled, so nothing would govern this session.",
+                "Start Claude Session",
+                "Start It Ungoverned",
+                "Cancel",
+                Messages.getWarningIcon(),
+            )
+            if (go != Messages.OK) return
+        }
+        val settings = SessionControlSettings.of(project)
+        if (asked != null) return launchIn(project, asked, governor)
+        if (settings.state.startIn == StartIn.Terminal) return launchIn(project, Host.Terminal, governor)
+        // Whether a herdr server runs: a process, so off the EDT.
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val running = HerdrService.of(project).cli.available()
+            ApplicationManager.getApplication().invokeLater({
+                when (hostFor(settings.state.startIn, running)) {
+                    HostPlan.Terminal -> launchIn(project, Host.Terminal, governor)
+                    HostPlan.Herdr -> launchIn(project, Host.Herdr, governor)
+                    HostPlan.HerdrDown -> {
+                        val go = Messages.showOkCancelDialog(
+                            project,
+                            "No herdr server is running, so the session cannot start in herdr. Start herdr, or start it in a terminal.",
+                            "Start Claude Session",
+                            "Start in a Terminal",
+                            "Cancel",
+                            Messages.getWarningIcon(),
+                        )
+                        if (go == Messages.OK) launchIn(project, Host.Terminal, governor)
+                    }
+                    HostPlan.Ask -> pick(
+                        project,
+                        "Where should the session run?",
+                        listOf(
+                            Choice("In herdr", "outlives the IDE; reattach from any terminal", Host.Herdr),
+                            Choice("In an IDE terminal", "ends with the IDE", Host.Terminal),
+                        ),
+                    ) { launchIn(project, it, governor) }
+                }
+            }, project.disposed)
+        }
+    }
+
+    private fun launchIn(project: Project, host: Host, governor: StartGovernor) {
         val sessionId = UUID.randomUUID().toString()
-        core.terminals.start(project, sessionId, project.basePath)
-        object : Task.Backgroundable(project, "Starting session ${shortId(sessionId)} — waiting for detection…", true) {
+        when (host) {
+            Host.Terminal -> {
+                // Core binds the daemon's MCP endpoint only while the daemon answers.
+                core.terminals.start(project, sessionId, project.basePath)
+                settle(project, sessionId, governor, host, "in a terminal")
+            }
+            Host.Herdr -> startInHerdr(project, sessionId, governor)
+        }
+    }
+
+    private fun startInHerdr(project: Project, sessionId: String, governor: StartGovernor) {
+        val cwd = project.basePath ?: return error(project, "This project has no folder for a herdr session to start in.")
+        val settings = SessionControlSettings.of(project)
+        val herdr = HerdrService.of(project).cli
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val last = settings.state.herdrLastWorkspace
+            val choices = try {
+                herdr.placements(projectFolders(project).ifEmpty { listOf(cwd) }, last, java.io.File(cwd).name)
+            } catch (e: Exception) {
+                return@executeOnPooledThread error(project, "MoonlightCode: could not read herdr's workspaces. ${e.message}")
+            }
+            ApplicationManager.getApplication().invokeLater({
+                // Asked not to ask: the last workspace used here, when it is still there.
+                val remembered = choices.firstOrNull { it is Placement.Tab && it.workspace.id == last }
+                if (settings.state.herdrReuseLast && remembered != null) {
+                    runHerdrStart(project, sessionId, remembered, cwd, governor)
+                } else {
+                    pick(project, "Where in herdr?", choices.map { Choice(placementTitle(it), placementNote(it, last), it) }) {
+                        runHerdrStart(project, sessionId, it, cwd, governor)
+                    }
+                }
+            }, project.disposed)
+        }
+    }
+
+    private fun placementTitle(p: Placement): String = when (p) {
+        is Placement.Tab -> p.workspace.label
+        is Placement.Split -> p.workspace.label
+        is Placement.NewWorkspace -> "New workspace \"${p.label}\""
+    }
+
+    private fun placementNote(p: Placement, last: String?): String = when (p) {
+        is Placement.Tab -> listOfNotNull("new tab", "this repository".takeIf { p.inRepo }, "last used here".takeIf { p.workspace.id == last }).joinToString(" · ")
+        is Placement.Split -> listOfNotNull("split beside ${p.pane}", "this repository".takeIf { p.inRepo }).joinToString(" · ")
+        is Placement.NewWorkspace -> "at the project root"
+    }
+
+    private fun runHerdrStart(project: Project, sessionId: String, placement: Placement, cwd: String, governor: StartGovernor) {
+        val where = "in herdr (${placementLabel(placement)})"
+        object : Task.Backgroundable(project, "Starting Claude Code $where…", false) {
+            override fun run(indicator: ProgressIndicator) {
+                // The same wiring as an IDE terminal: the daemon's MCP config when it governs.
+                val mcpJson = if (governor == StartGovernor.Daemon) {
+                    try {
+                        mcpConfigJson(core.control.mcpEndpoint(sessionId))
+                    } catch (e: Exception) {
+                        warn(project, "MoonlightCode: no MCP endpoint for this session (${e.message}). It starts without the moonlight verbs — it cannot propose a plan or request a phase.")
+                        null
+                    }
+                } else {
+                    null
+                }
+                try {
+                    val workspace = HerdrService.of(project).cli.start(sessionId, placement, cwd, mcpJson)
+                    if (workspace != null) SessionControlSettings.of(project).state.herdrLastWorkspace = workspace
+                } catch (e: Exception) {
+                    error(project, "MoonlightCode: the session did not start in herdr. ${e.message}")
+                    return
+                }
+                settle(project, sessionId, governor, Host.Herdr, where)
+            }
+        }.queue()
+    }
+
+    /** After the launch: adopt under the daemon; under the Claude Code plugin, wait for it to report the session. */
+    private fun settle(project: Project, sessionId: String, governor: StartGovernor, host: Host, where: String) {
+        val short = shortId(sessionId)
+        if (governor == StartGovernor.None) return notifyStarted(project, sessionId, host, "Session $short started $where, ungoverned.", NotificationType.INFORMATION)
+        object : Task.Backgroundable(project, "Starting session $short $where — waiting for it to appear…", true) {
             override fun run(indicator: ProgressIndicator) {
                 repeat(ADOPT_ATTEMPTS) {
                     if (indicator.isCanceled) return
@@ -213,27 +345,47 @@ object SessionOps {
                     // The launch, wherever it is now: the operator may `/resume` another
                     // conversation before the minted one ever writes a line.
                     val current = core.sessions().firstOrNull { it.isOrContinues(sessionId) } ?: return@repeat
+                    if (governor == StartGovernor.Mod) {
+                        return notifyStarted(project, sessionId, host, "Session $short started $where. The Claude Code plugin governs it, in ${phaseLabel(current.phase)}.", NotificationType.INFORMATION)
+                    }
                     try {
                         if (!current.adopted) core.control.adopt(current.sessionId)
                         core.refresh()
-                        info(
-                            project,
-                            "Session ${shortId(sessionId)} started and adopted — governed from its next tool call, and reviews can be delivered to its terminal.",
-                        )
+                        notifyStarted(project, sessionId, host, "Session $short started $where and adopted — governed from its next tool call, and reviews can be delivered to it.", NotificationType.INFORMATION)
                     } catch (e: Exception) {
                         warn(project, "Session started, but adopting it failed: ${e.message}. Use \"Adopt a Claude Code Session\" to retry.")
                     }
                     return
                 }
-                // Detection works off the transcript, which only appears once the session
-                // writes something. Say so rather than implying the session is governed.
-                warn(
+                // Detection works off the transcript (or the plugin's state file), which only
+                // appears once the session writes something. Say so rather than imply it is governed.
+                notifyStarted(
                     project,
-                    "Session ${shortId(sessionId)} started, but detection has not seen it yet, so it is NOT governed. " +
-                        "It is detected once it writes its first transcript line — send it a prompt, then adopt it.",
+                    sessionId,
+                    host,
+                    if (governor == StartGovernor.Daemon) {
+                        "Session $short started $where, but detection has not seen it yet, so it is NOT governed. " +
+                            "It is detected once it writes its first transcript line — send it a prompt, then adopt it."
+                    } else {
+                        "Session $short started $where, but the Claude Code plugin has not reported it yet. Check that the plugin is enabled in that session."
+                    },
+                    NotificationType.WARNING,
                 )
             }
         }.queue()
+    }
+
+    private fun notifyStarted(project: Project, sessionId: String, host: Host, message: String, type: NotificationType) {
+        val note = NotificationGroupManager.getInstance().getNotificationGroup("MoonlightCode").createNotification(message, type)
+        if (host == Host.Herdr) note.addAction(NotificationAction.createSimpleExpiring("Show in herdr") { showInHerdr(project, sessionId) })
+        note.notify(project)
+    }
+
+    /** Bring the session's herdr pane forward. */
+    fun showInHerdr(project: Project, sessionId: String) {
+        background(project) {
+            if (!HerdrService.of(project).cli.focus(sessionId)) info(project, "herdr does not host this session.")
+        }
     }
 
     /**

@@ -36,6 +36,8 @@
     trash: '<svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.3" d="M3 4.5h10M6 4.5V3h4v1.5M4.5 4.5l.7 9h5.6l.7-9"/></svg>',
     comment: '<svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.3" d="M2.5 3h11v7.5H7l-3 2.5v-2.5H2.5z"/></svg>',
     check: '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M2.5 8.5l3.5 3.5 7.5-8"/></svg>',
+    hide: '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.3" d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z M2.5 13.5l11-11"/></svg>',
+    forget: '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.3" d="M9.5 2.5l4 4-6 6H4l-1.5-1.5L9.5 2.5z M6 6l4 4 M4 13.5h9"/></svg>',
   };
 
   function track(index, frozen) {
@@ -116,6 +118,19 @@
         <button class="link" data-next="${esc(d.id)}">Next phase</button>`}</div>`;
   }
 
+  /**
+   * Hide and Forget for every tidy-able session of a list or group: ones neither working
+   * nor waiting on you. Forget only for sessions the daemon knows.
+   */
+  function tidyTools(group, tidy, forgettable, name) {
+    if (!tidy.length) return '';
+    return `${`<button class="ibtn" data-tidy="hide" data-group="${esc(group)}" title="Hide its ${plural(tidy.length, 'ended session')} in this window" aria-label="Hide the ended sessions of ${esc(name)}">${ICON.hide}</button>`}${
+      forgettable.length
+        ? `<button class="ibtn" data-tidy="forget" data-group="${esc(group)}" title="Forget its ${plural(forgettable.length, 'ended session')} in the daemon" aria-label="Forget the ended sessions of ${esc(name)}">${ICON.forget}</button>`
+        : ''
+    }`;
+  }
+
   function sessionsView() {
     const sel = model.detail ? model.detail.id : undefined;
     const gate = `<div class="gate"><span class="dot ${model.gate.tone}"></span>${esc(model.gate.text)}</div>`;
@@ -129,6 +144,9 @@
     } else if (model.governedEmpty === 'no-sessions') {
       governed = `<div class="empty"><p>No Claude Code sessions detected. A session appears once it writes its first transcript line.</p>
         <div class="actions"><button class="btn primary" data-cmd="startSession">Start a governed session</button></div></div>`;
+    } else if (model.governedEmpty === 'all-hidden') {
+      governed = `<div class="empty"><p>Every governed session is hidden in this window. They come back on their own when they work again.</p>
+        <div class="actions"><button class="btn" data-cmd="showHidden">Show hidden sessions</button></div></div>`;
     } else if (model.governedEmpty === 'none-governed') {
       governed = `<div class="empty"><p>No session is governed yet. The sessions below run with nothing gating them. Adopt one to put it under a workflow phase.</p></div>`;
     } else {
@@ -136,12 +154,12 @@
         .map(
           (g) =>
             (g.label
-              ? `<div class="group">${esc(g.label)}${
+              ? `<div class="group">${esc(g.label)}<span class="tools">${tidyTools(g.key, g.tidy, g.forgettable, g.label)}${
                   g.customId
-                    ? `<span class="tools"><button class="ibtn" data-cmd="renameGroup" data-group="${esc(g.customId)}" title="Rename group" aria-label="Rename ${esc(g.label)}">${ICON.edit}</button>
-                       <button class="ibtn" data-cmd="deleteGroup" data-group="${esc(g.customId)}" title="Delete group" aria-label="Delete ${esc(g.label)}">${ICON.trash}</button></span>`
+                    ? `<button class="ibtn" data-cmd="renameGroup" data-group="${esc(g.customId)}" title="Rename group" aria-label="Rename ${esc(g.label)}">${ICON.edit}</button>
+                       <button class="ibtn" data-cmd="deleteGroup" data-group="${esc(g.customId)}" title="Delete group" aria-label="Delete ${esc(g.label)}">${ICON.trash}</button>`
                     : ''
-                }</div>`
+                }</span></div>`
               : '') +
             `<ul class="sessions" role="listbox" aria-label="${esc(g.label || 'Governed sessions')}">${rows(g.rows, true, sel)}</ul>`
         )
@@ -150,9 +168,22 @@
     const unadopted = model.unadopted.length
       ? `<ul class="sessions" role="listbox" aria-label="Sessions not gated">${rows(model.unadopted, false, sel)}</ul>`
       : `<p class="empty">Every detected session is governed.</p>`;
+    // One flat list has no group header: its tidy tools go on the list's own head.
+    const flat = model.governed.length === 1 && !model.governed[0].label ? model.governed[0] : undefined;
+    const links = [
+      model.hiddenCount ? `<button class="link" data-cmd="showHidden">Hidden (${model.hiddenCount})</button>` : '',
+      model.emptyGroups ? `<button class="link" data-cmd="removeEmptyGroups">Remove empty groups (${model.emptyGroups})</button>` : '',
+    ].join('');
     return `${gate}
-      <div class="list-head">Governed <span class="count">${model.governedCount}</span></div>${governed}
-      <div class="list-head">Not gated <span class="count">${model.unadopted.length}</span></div>${unadopted}
+      <div class="list-head">Governed <span class="count">${model.governedCount}</span><span class="tools">${
+        flat ? tidyTools(flat.key, flat.tidy, flat.forgettable, 'the governed list') : ''
+      }</span>${links ? `<span class="links">${links}</span>` : ''}</div>${governed}
+      <div class="list-head">Not gated <span class="count">${model.unadopted.length}</span><span class="tools">${tidyTools(
+        'unadopted',
+        model.unadoptedTidy,
+        model.unadoptedForgettable,
+        'the not-gated list'
+      )}</span></div>${unadopted}
       ${model.detail ? `<section class="detail" aria-label="Selected session">${detail(model.detail)}</section>` : ''}`;
   }
 
@@ -161,7 +192,7 @@
     if (!d.adopted) {
       return `${head}<p class="empty">Nothing gates this session: it can write anywhere. Adopt it to put it under a workflow phase.</p>
         <div class="footer"><button class="btn primary" data-cmd="adopt" data-id="${esc(d.id)}">Adopt this session</button>
-        <button class="btn" data-cmd="follow" data-id="${esc(d.id)}">${d.following ? 'Following' : 'Follow'}</button></div>`;
+        <button class="btn" data-cmd="follow" data-id="${esc(d.id)}">${d.following ? 'Following' : 'Follow'}</button>${tidyButtons(d)}</div>`;
     }
     let body;
     if (d.hold) {
@@ -181,7 +212,21 @@
         <button class="btn primary" data-cmd="follow" data-id="${esc(d.id)}" ${d.following ? 'disabled' : ''}>${d.following ? 'Following this session' : 'Follow this session'}</button>
         <button class="btn" data-cmd="addToGroup" data-id="${esc(d.id)}">Add to group…</button>
         ${d.groupName ? `<button class="btn" data-cmd="removeFromGroup" data-id="${esc(d.id)}">Remove from ${esc(d.groupName)}</button>` : ''}
+        ${d.inHerdr ? `<button class="btn" data-cmd="showInHerdr" data-id="${esc(d.id)}">Show in herdr</button>` : ''}${tidyButtons(d)}
       </div>`;
+  }
+
+  /**
+   * Hide and Forget for one session. Not `disabled` when refused: a disabled button shows
+   * no tooltip, and the reason is the point — `aria-disabled` keeps it readable and inert.
+   */
+  function tidyButtons(d) {
+    const one = (cmd, label, blocker, why) =>
+      `<button class="btn" data-cmd="${cmd}" data-id="${esc(d.id)}" ${blocker ? 'aria-disabled="true"' : ''} title="${esc(blocker || why)}">${label}</button>`;
+    return (
+      one('hide', 'Hide', d.hideBlocker, 'Hide it in this window until it works again') +
+      one('forget', 'Forget\u2026', d.forgetBlocker, 'Delete the daemon\u2019s record of it; the transcript stays')
+    );
   }
 
   function picker() {
@@ -389,6 +434,7 @@
   document.addEventListener('click', (e) => {
     const t = /** @type {HTMLElement} */ (e.target).closest('button, [data-select]');
     if (!t || (t instanceof HTMLButtonElement && t.disabled)) return;
+    if (typeof t.getAttribute === 'function' && t.getAttribute('aria-disabled') === 'true') return;
     const d = t.dataset;
     if (d.tab) return setTab(d.tab);
     if (d.goto) return setTab(d.goto);
@@ -403,6 +449,7 @@
       post({ type: 'select', id: d.openHold });
       return post({ type: 'command', command: d.plan === '1' ? 'reviewPlan' : 'answerHold', id: d.openHold });
     }
+    if (d.tidy) return post({ type: 'tidy', action: d.tidy, group: d.group });
     if (d.cmd) return post({ type: 'command', command: d.cmd, id: d.id, groupId: d.group });
     if (d.commentFile) {
       e.stopPropagation();

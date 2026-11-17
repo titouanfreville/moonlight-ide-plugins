@@ -76,6 +76,33 @@ class ModBridgeTest {
         assertEquals(emptyList<ModState>(), ModBridge.readStates(dir.resolve("missing"), System.currentTimeMillis()))
     }
 
+    private fun reviewFile(id: String = "s1") =
+        """{"v":1,"sessionId":"$id","root":"/work/app","title":null,"review":{"scope":"session","files":[],"comments":[],"findings":[],"skills":["code-review"]},"updatedMs":0}"""
+
+    @Test
+    fun `parseReviewFile reads the review alone, refusing another version`() {
+        val (id, review) = ModBridge.parseReviewFile(reviewFile())!!
+        assertEquals("s1", id)
+        assertEquals(listOf("code-review"), review.skills)
+        assertNull(ModBridge.parseReviewFile(reviewFile().replace("\"v\":1", "\"v\":2")))
+        assertNull(ModBridge.parseReviewFile(reviewFile().replace("\"review\"", "\"other\"")))
+    }
+
+    /** A mod standing by under the daemon: its review is read, but it is no governed session. */
+    @Test
+    fun `readReviews keeps live standing-by sessions, and readStates does not see them`() {
+        val dir = Files.createTempDirectory("mod-bridge")
+        for ((id, alive) in listOf("live" to true, "dead" to false)) {
+            Files.createDirectories(dir.resolve(id))
+            Files.writeString(dir.resolve(id).resolve("review.json"), reviewFile(id))
+            val beat = Files.writeString(dir.resolve(id).resolve("heartbeat"), "1")
+            if (!alive) Files.setLastModifiedTime(beat, FileTime.fromMillis(System.currentTimeMillis() - 60_000))
+        }
+        val now = System.currentTimeMillis()
+        assertEquals(setOf("live"), ModBridge.readReviews(dir, now).keys)
+        assertEquals(emptyList<ModState>(), ModBridge.readStates(dir, now))
+    }
+
     @Test
     fun `send writes the entry, waits for the answer, then cleans up`() {
         val dir = Files.createTempDirectory("mod-bridge")

@@ -189,19 +189,23 @@ impl PhaseVerbExecutor {
     fn phase_status(&self, session: &SessionId) -> Result<String, ControlError> {
         let yn = |b: bool| if b { "allowed" } else { "denied" };
         Ok(match self.current_phase(session) {
+            // The session is named so a verb resolved to a different conversation than
+            // the one the hooks gate shows up at once, not as an unexplained denial later.
             Some(phase) => format!(
-                "You are in the {} phase ({}). Project-file edits: {}. AI-workspace notes (.ai/): {}. \
+                "You are in the {} phase ({}) [session {}]. Project-file edits: {}. AI-workspace notes (.ai/): {}. \
                  `next` would advance to {}. To move, call request_phase with one of: {} \
                  (every change is operator-approved).",
                 phase.label(),
                 phase.mode_label(),
+                session.as_str(),
                 yn(phase.allows_writes()),
                 yn(phase.allows_ai_workspace_writes()),
                 phase.next().label(),
                 Self::valid_targets(),
             ),
             None => format!(
-                "This session's phase is not tracked yet. The workflow phases are: {}.",
+                "This session's phase is not tracked yet [session {}]. The workflow phases are: {}.",
+                session.as_str(),
                 Self::valid_targets()
             ),
         })
@@ -418,6 +422,8 @@ mod tests {
         assert!(out.contains("Project-file edits: denied"), "{out}");
         assert!(out.contains("AI-workspace notes (.ai/): allowed"), "{out}");
         assert!(out.contains("Auto"), "{out}");
+        // Names the session it read, so a verb/hook split is visible at a glance.
+        assert!(out.contains("[session s1]"), "{out}");
         // A pure read: it must not emit any engine command.
         assert!(rx.try_recv().is_err());
     }

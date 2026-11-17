@@ -134,16 +134,33 @@ object ModBridge {
         return ModAnswer(ok, a["message"] as? String ?: "")
     }
 
-    /** Every session a live mod governs, read from `dir`. */
-    fun readStates(dir: Path, now: Long): List<ModState> {
-        val folders = runCatching { Files.list(dir).use { it.toList() } }.getOrDefault(emptyList())
-        return folders.mapNotNull { folder ->
-            runCatching {
-                if (now - Files.getLastModifiedTime(folder.resolve("heartbeat")).toMillis() > HEARTBEAT_STALE_MS) return@runCatching null
-                parseState(Files.readString(folder.resolve("state.json")))?.takeIf { it.sessionId == folder.name }
-            }.getOrNull()
-        }
+    /**
+     * A `review.json`: the review of a session the daemon governs, which the mod still runs
+     * (and still takes review decisions for). `null` for one this IDE cannot read.
+     */
+    fun parseReviewFile(text: String): Pair<String, ModReview>? {
+        val s = runCatching { Json.parse(text) }.getOrNull() as? Map<*, *> ?: return null
+        if ((s["v"] as? Number)?.toInt() != VERSION) return null
+        val sessionId = s["sessionId"] as? String ?: return null
+        val review = (s["review"] as? Map<*, *>)?.let(::parseReview) ?: return null
+        return sessionId to review
     }
+
+    /** Every session a live mod governs, read from `dir`. */
+    fun readStates(dir: Path, now: Long): List<ModState> = liveFolders(dir, now).mapNotNull { folder ->
+        runCatching { parseState(Files.readString(folder.resolve("state.json")))?.takeIf { it.sessionId == folder.name } }.getOrNull()
+    }
+
+    /** The review of every session a live mod stands by in (the daemon governs it), read from `dir`. */
+    fun readReviews(dir: Path, now: Long): Map<String, ModReview> = liveFolders(dir, now).mapNotNull { folder ->
+        runCatching { parseReviewFile(Files.readString(folder.resolve("review.json")))?.takeIf { it.first == folder.name } }.getOrNull()
+    }.toMap()
+
+    /** The session folders whose mod beat recently. */
+    private fun liveFolders(dir: Path, now: Long): List<Path> =
+        runCatching { Files.list(dir).use { it.toList() } }.getOrDefault(emptyList()).filter { folder ->
+            runCatching { now - Files.getLastModifiedTime(folder.resolve("heartbeat")).toMillis() <= HEARTBEAT_STALE_MS }.getOrDefault(false)
+        }
 
     /**
      * Hands one decision to the mod and waits for its answer (it reads its inbox every two

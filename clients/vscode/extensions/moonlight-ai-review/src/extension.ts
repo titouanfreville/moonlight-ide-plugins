@@ -32,7 +32,7 @@ import {
   openSessionReview,
 } from './review';
 import { deliver, isConfirmed, showHandoff } from './delivery';
-import type { OwnedTerminals } from 'moonlight-core';
+import type { HerdrHost, OwnedTerminals } from 'moonlight-core';
 import { requireCore } from './core';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -282,7 +282,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!core) {
         return;
       }
-      await submitReview(context, reviewTarget, core.terminals);
+      await submitReview(context, reviewTarget, core.terminals, core.herdr);
       await refreshPending();
     })
   );
@@ -654,7 +654,8 @@ type WebviewMessage =
 async function submitReview(
   context: vscode.ExtensionContext,
   sessionId: string,
-  terminals: OwnedTerminals
+  terminals: OwnedTerminals,
+  herdr?: HerdrHost
 ): Promise<void> {
   let outcome: controlApi.SubmitReviewResponse | undefined;
   try {
@@ -689,7 +690,7 @@ async function submitReview(
     return;
   }
 
-  const delivery = await deliver(terminals, sessionId, pointer, outcome.review_path ?? undefined);
+  const delivery = await deliver(terminals, sessionId, pointer, outcome.review_path ?? undefined, herdr);
   showHandoff(context, pointer, outcome.review_path ?? undefined, delivery, n);
 
   if (isConfirmed(delivery)) {

@@ -21,8 +21,10 @@ import type { DiscoverableSession } from 'moonlight-control-client';
 import type { MoonlightApi, ReviewPanelData } from 'moonlight-core';
 
 import type { GroupStore } from './groups-store';
-import { panelModel, reviewFailure, reviewTarget, type Tab } from './panel-model';
-import { isTab, phaseMove, routeOf, type Inbound } from './panel-route';
+import type { HiddenStore } from './hidden-store';
+import { reconcileHidden } from './tidy';
+import { panelModel, reviewFailure, reviewTarget, type PanelModel, type Tab } from './panel-model';
+import { isTab, phaseMove, routeOf, tidyTargets, type Inbound } from './panel-route';
 import { advanceSessionPhase, setSessionPhase } from './phase-route';
 
 export const PANEL_VIEW_ID = 'moonlight.panel';
@@ -38,6 +40,8 @@ export class MoonlightPanel implements vscode.WebviewViewProvider {
   private timer: ReturnType<typeof setTimeout> | undefined;
   /** Bumped per render, so a slow review answer never overwrites a newer one. */
   private generation = 0;
+  /** The model last drawn: a group-wide tidy acts on what the page showed, not on a fresh poll. */
+  private lastModel: PanelModel | undefined;
   /**
    * Holds, while the sidebar is not on screen. The activity-bar badge needs a resolved
    * view, which exists only once the sidebar has been shown in this window: until then
@@ -48,7 +52,8 @@ export class MoonlightPanel implements vscode.WebviewViewProvider {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly core: MoonlightApi,
-    private readonly groups: GroupStore
+    private readonly groups: GroupStore,
+    private readonly hidden: HiddenStore
   ) {
     const saved = context.workspaceState.get<{ tab?: Tab; selected?: string }>(STATE_KEY) ?? {};
     this.tab = isTab(saved.tab) ? saved.tab : 'sessions';
@@ -128,6 +133,12 @@ export class MoonlightPanel implements vscode.WebviewViewProvider {
     const generation = ++this.generation;
     const sessions = this.core.sessions();
     const holds = this.core.heldApprovals?.() ?? [];
+    // A hidden session that works again is visible again, for good — even while the
+    // sidebar is closed, so it is there when it opens.
+    const reconciled = reconcileHidden(this.hidden.all(), sessions, new Set(holds.map((h) => h.sessionId)));
+    if (reconciled.changed) {
+      void this.hidden.replace(reconciled.hidden);
+    }
     // Holds are the one number worth interrupting for: on the activity bar once the view
     // exists, and in the status bar while the sidebar is not on screen.
     const tooltip = `${holds.length} session(s) waiting on you`;
@@ -144,6 +155,8 @@ export class MoonlightPanel implements vscode.WebviewViewProvider {
     if (!this.view?.visible) {
       return;
     }
+    // Sessions in herdr panes, for "Show in herdr": cached in core, so not a process per redraw.
+    const herdrHosted = (await this.core.herdr?.hosted()) ?? new Set<string>();
     const target = reviewTarget(sessions, this.selected);
     let review: ReviewPanelData | undefined;
     if (target && this.reviewInstalled) {
@@ -170,7 +183,11 @@ export class MoonlightPanel implements vscode.WebviewViewProvider {
       review,
       reviewInstalled: this.reviewInstalled,
       colorBlind: vscode.workspace.getConfiguration('moonlight.accessibility').get<boolean>('colorBlind', false),
+      herdrHosted,
+      hidden: new Set(Object.keys(reconciled.hidden)),
+      governor: this.core.governor ? (id) => this.core.governor?.(id) ?? 'daemon' : undefined,
     });
+    this.lastModel = model;
     void this.view.webview.postMessage({ type: 'model', model });
   }
 
@@ -198,6 +215,16 @@ export class MoonlightPanel implements vscode.WebviewViewProvider {
           if (phase) {
             await setSessionPhase(this.core, m.id, phase);
             await this.core.refresh();
+          }
+          break;
+        }
+        case 'tidy': {
+          const ids = this.lastModel ? tidyTargets(this.lastModel, m.action, m.group) : [];
+          if (ids.length > 0) {
+            await vscode.commands.executeCommand(
+              m.action === 'hide' ? 'moonlight.sessions.hideSessions' : 'moonlight.sessions.forgetSessions',
+              ids
+            );
           }
           break;
         }

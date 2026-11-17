@@ -58,6 +58,8 @@ class MoonlightService : MoonlightApi, Disposable {
     // both, which is all a panel needs to know.
     @Volatile private var daemonSessions: List<DiscoverableSession> = emptyList()
     @Volatile private var modStates: List<ModState> = emptyList()
+    /** The reviews a mod standing by publishes, for sessions the daemon governs. */
+    @Volatile private var modReviews: Map<String, ModReview> = emptyMap()
     /** When each mod hold was first seen, so "waiting 40s" means what it says. */
     private val modHoldSince = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
     private var modPoll: ScheduledFuture<*>? = null
@@ -359,7 +361,8 @@ class MoonlightService : MoonlightApi, Disposable {
     override fun proposedPlan(sessionId: String): String? =
         modStates.firstOrNull { it.sessionId == sessionId }?.plan?.markdown ?: gate.plan(sessionId)
 
-    override fun modReview(sessionId: String): ModReview? = modStates.firstOrNull { it.sessionId == sessionId }?.review
+    override fun modReview(sessionId: String): ModReview? =
+        modStates.firstOrNull { it.sessionId == sessionId }?.review ?: modReviews[sessionId]
 
     override fun governor(sessionId: String): Governor =
         if (modStates.any { it.sessionId == sessionId }) Governor.Mod else Governor.Daemon
@@ -386,7 +389,14 @@ class MoonlightService : MoonlightApi, Disposable {
     @Synchronized
     private fun refreshMod() {
         val next = ModBridge.readStates(modDir(), System.currentTimeMillis())
-        if (next == modStates) return
+        val nextReviews = ModBridge.readReviews(modDir(), System.currentTimeMillis())
+        if (next == modStates && nextReviews == modReviews) return
+        modReviews = nextReviews
+        if (next == modStates) {
+            // Only a review moved: the AI Review tab redraws on sessionsChanged.
+            fireSessions()
+            return
+        }
         modStates = next
         val now = System.currentTimeMillis()
         for (state in next) {

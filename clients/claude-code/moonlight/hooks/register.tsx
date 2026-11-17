@@ -53,7 +53,7 @@ import {
 } from './plan'
 import { countColors, isColorBlindOption, PHASE_GLYPH, phaseBadge, phaseColor, severityLabel } from './palette'
 import { answer, BRIDGE_VERSION, type InboxEntry, parseInboxEntry, pendingEntries, type ReviewEntry, sessionTitleFrom, titleFromTranscript } from './bridge'
-import { controlUrl, countMisses, discoveryFile, type Governor, hooksInstalled, isHealthy, nextGovernor } from './daemon'
+import { controlUrl, countMisses, discoveryFile, type Governor, hooksInstalled, isHealthy, nextGovernor, DAEMON_PHASE, HANDBACK_PROBE_TICKS } from './daemon'
 import {
   allowWriteBreach,
   checkSandbox,
@@ -137,6 +137,8 @@ let modRoot: string | undefined
 // until session.start decides; the gate hooks govern unless it is 'daemon'.
 let governor: Governor | undefined
 let probing = false
+let standIn = false
+let handbackTicks = 0
 let missedProbes = 0
 let protectedRoots: string[] = []
 
@@ -351,15 +353,20 @@ const initGate = async ($: $): Promise<void> => {
 
 const PROBE_TIMEOUT_MS = 3000
 
+
+const daemonUrl = async ($: $): Promise<string | undefined> => {
+  const file = discoveryFile(await $.env.get('HOME'), await $.env.get('MOONLIGHT_HOME'))
+  if (file === undefined || !(await $.fs.exists(file))) return undefined
+  return controlUrl(await $.fs.read(file))
+}
+
 // Whether the MoonlightCode daemon governs Claude Code right now: it answers
 // on loopback and reports its hooks installed. Any doubt reads as no, so the
 // mod keeps the gate.
 // `watch`: the daemon is known to govern, so its health is enough (cheap); at
 // session start, its hooks must be installed too.
 const daemonGoverns = async ($: $, watch = false): Promise<boolean> => {
-  const file = discoveryFile(await $.env.get('HOME'), await $.env.get('MOONLIGHT_HOME'))
-  if (file === undefined || !(await $.fs.exists(file))) return false
-  const url = controlUrl(await $.fs.read(file))
+  const url = await daemonUrl($)
   if (url === undefined) return false
   const answer = $.http
     .fetch(`${url}/control/${watch ? 'health' : 'gating-status'}`)
@@ -418,6 +425,9 @@ const watchDaemon = async ($: $): Promise<void> => {
     missedProbes = countMisses(missedProbes, governs)
     if (nextGovernor(governor, governs, missedProbes) === 'daemon') return
     await setGovernor($, 'mod')
+    standIn = true
+    // Its review moves to state.json, which now says the mod governs.
+    await dropReviewFile($)
     await tryStart($, 'the gate', async () => {
       await initPaths($)
       // The phase is the project's: another live session the mod governs here
@@ -438,7 +448,56 @@ const watchDaemon = async ($: $): Promise<void> => {
     probing = false
   }
 }
-
+// While the mod stands in, it checks every HANDBACK_PROBE_TICKS ticks whether the
+// daemon governs again, and gives the session back in the phase it is in: the
+// daemon adopts it again (a restarted daemon may not have it adopted) and takes
+// the phase; the mod drops its published state and its sandbox entries. If the
+// daemon does not take it (it has not detected the session yet, say), the mod
+// keeps it and tries again later.
+const watchForDaemonReturn = async ($: $): Promise<void> => {
+  if (governor !== 'mod' || !standIn || probing) return
+  handbackTicks += 1
+  if (handbackTicks % HANDBACK_PROBE_TICKS !== 0) return
+  probing = true
+  try {
+    const governs = await daemonGoverns($).catch(() => false)
+    if (nextGovernor(governor, governs, 0, standIn) !== 'daemon') return
+    const url = await daemonUrl($)
+    const at = await sessionFolder($)
+    if (url === undefined || at === undefined) return
+    const phase = await read($, phaseState)
+    const post = (path: string, body: object) =>
+      $.http
+        .fetch(`${url}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        .then(r => r.ok, () => false)
+    const taken =
+      (await post('/control/adopt', { session_id: at.id })) &&
+      (await post('/control/phase', { session_id: at.id, phase: DAEMON_PHASE[phase] }))
+    if (!taken) return
+    await setGovernor($, 'daemon')
+    standIn = false
+    missedProbes = 0
+    // Not published any more: the IDEs read this file to tell the mod governs.
+    await $.process.run(['rm', '-f', `${at.dir}/state.json`]).catch(() => undefined)
+    publishedState = undefined
+    // Its review stays on the IDE's AI Review, through review.json from the next tick.
+    publishedReview = undefined
+    await tryStart($, 'the sandbox release', () => releaseSandbox($))
+    $.ui.toast(`Moonlight: the daemon is back; this session is gated by it again (${phaseLabel(phase)})`)
+    await tellModel(
+      $,
+      `[moonlight] The MoonlightCode daemon is back and governs this session again, in the ${phaseLabel(phase)} ` +
+        `phase (${phaseRule(phase)}). Use mcp__moonlight__request_phase and mcp__moonlight__present_plan ` +
+        'from now on, not the mcp__moonlightcode__ verbs.',
+    )
+  } finally {
+    probing = false
+  }
+}
 // ---- Write guard ----
 
 const denyWrite = (path: string, phase: Phase): { deny: string } => ({
@@ -552,14 +611,18 @@ const beat = async ($: $): Promise<void> => {
 
 const tick = async ($: $): Promise<void> => {
   if (governor === 'daemon') await watchDaemon($)
-  else await syncPhase($)
-  await beat($)
-  if (governor === 'mod') {
-    await applyInbox($)
-    await refreshReview($)
-    await refreshTitle($)
-    await publishState($)
+  else {
+    await syncPhase($)
+    await watchForDaemonReturn($)
   }
+  await beat($)
+  // The review is the mod's whoever governs: while the daemon does, the IDE's AI
+  // Review still reads it (review.json) and sends it decisions (review ones only).
+  await applyInbox($)
+  await refreshReview($)
+  await refreshTitle($)
+  await publishState($)
+  await publishReview($)
 }
 
 // The session's name, from its transcript every TITLE_REFRESH_TICKS ticks (and
@@ -643,6 +706,34 @@ const publishState = async ($: $): Promise<void> => {
   publishedState = key
 }
 
+let publishedReview: string | undefined
+
+// The review alone, written while the daemon governs and only when it changed:
+// the IDE's AI Review lists the session from it, but its gate stays the
+// daemon's (state.json would tell the IDEs the mod governs).
+const publishReview = async ($: $): Promise<void> => {
+  if (governor !== 'daemon') return
+  const at = await sessionFolder($)
+  if (at === undefined) return
+  const review = {
+    v: BRIDGE_VERSION,
+    sessionId: at.id,
+    root: root ?? null,
+    title: await read($, sessionTitleState),
+    review: await reviewForIde($),
+  }
+  const key = JSON.stringify(review)
+  if (key === publishedReview) return
+  await $.fs.write(`${at.dir}/review.json`, `${JSON.stringify({ ...review, updatedMs: await $.clock.now() })}\n`)
+  publishedReview = key
+}
+
+const dropReviewFile = async ($: $): Promise<void> => {
+  const at = await sessionFolder($)
+  if (at !== undefined) await $.process.run(['rm', '-f', `${at.dir}/review.json`]).catch(() => undefined)
+  publishedReview = undefined
+}
+
 // The session's name, as the IDE panels list it: Claude Code's own title once it
 // has one; until then the first line of the operator's first prompt, which is
 // what the title is made from anyway.
@@ -660,6 +751,7 @@ const noteTitle = async ($: $, title: string | undefined, transcript: string | u
   if (named === (await read($, sessionTitleState))) return
   await update($, sessionTitleState, () => named)
   await publishState($)
+  await publishReview($)
 }
 
 const reviewForIde = async ($: $) => {
@@ -705,6 +797,7 @@ const applyInbox = async ($: $): Promise<void> => {
   reviewDirty = true
   await refreshReview($)
   await publishState($)
+  await publishReview($)
   for (const a of answered) await $.fs.write(`${at.dir}/outbox/${a.name}`, answer(a.ok, a.message))
 }
 
@@ -767,6 +860,9 @@ const applyReviewEntry = async ($: $, entry: ReviewEntry): Promise<{ ok: boolean
 // One decision, through the functions the panes call.
 const applyEntry = async ($: $, entry: InboxEntry): Promise<{ ok: boolean; message: string }> => {
   if (entry.kind !== 'phase' && entry.kind !== 'request' && entry.kind !== 'plan') return applyReviewEntry($, entry)
+  // The phase, its requests and the plan are the daemon's while it governs.
+  if (governor === 'daemon')
+    return { ok: false, message: "The MoonlightCode daemon governs this session: decide its phase and plan from the daemon's panels." }
   if (entry.kind === 'phase') {
     const now = await operatorSetPhase($, entry.to)
     $.ui.toast(`Moonlight: phase is now ${phaseLabel(now)} (set from the IDE)`)
@@ -2230,6 +2326,8 @@ export const register: Register = (on, options) => {
   // Answers at once: the plan is stored and the panel opened; the verdict
   // reaches the agent later, as a prompt.
   on('tool.call', { tool: 'mcp__moonlightcode__present_plan' }, async ($, e) => {
+    if (governor === 'daemon')
+      return { deny: 'The MoonlightCode daemon governs this session: use mcp__moonlight__present_plan / mcp__moonlight__request_phase.' }
     const input = e as unknown as { plan?: unknown; title?: unknown }
     const markdown = typeof input.plan === 'string' ? input.plan : ''
     if (markdown.trim() === '') return { deny: 'present_plan needs `plan`: the whole plan, as Markdown.' }
@@ -2439,6 +2537,8 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', { tool: 'mcp__moonlightcode__request_phase' }, async ($, e) => {
+    if (governor === 'daemon')
+      return { deny: 'The MoonlightCode daemon governs this session: use mcp__moonlight__present_plan / mcp__moonlight__request_phase.' }
     const input = e as unknown as { phase?: string; reason?: string }
     const current = await readPhase($)
     const word = input.phase?.trim().toLowerCase() ?? ''

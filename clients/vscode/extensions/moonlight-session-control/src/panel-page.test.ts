@@ -257,3 +257,22 @@ test('a session list is one Tab stop, on the selected row', () => {
   const stops = [...p.view().matchAll(/tabindex="0" data-select="(\w)"/g)].map((m) => m[1]);
   assert.deepEqual(stops, ['b']);
 });
+
+test('the detail offers Hide and Forget, refused ones inert but saying why', () => {
+  const p = page();
+  p.show(panelModel(input({ sessions: [session('a', { status: 'Running' })], selected: 'a' })));
+  assert.match(p.view(), /data-cmd="hide" data-id="a" aria-disabled="true" title="It is working."/);
+  p.show(panelModel(input({ sessions: [session('a')], selected: 'a' })));
+  assert.match(p.view(), /data-cmd="forget" data-id="a"  title="Delete the daemon/);
+  p.click({ cmd: 'hide', id: 'a' });
+  assert.deepEqual(p.posted.at(-1), { type: 'command', command: 'hide', id: 'a' });
+});
+
+test("a list's tidy buttons post the group, never ids", () => {
+  const p = page();
+  p.show(panelModel(input({ sessions: [session('a'), session('b')], hidden: new Set(['b']) })));
+  assert.match(p.view(), /data-tidy="hide" data-group="all"/);
+  assert.match(p.view(), /Hidden \(1\)/);
+  p.click({ tidy: 'forget', group: 'all' });
+  assert.deepEqual(p.posted.at(-1), { type: 'tidy', action: 'forget', group: 'all' });
+});

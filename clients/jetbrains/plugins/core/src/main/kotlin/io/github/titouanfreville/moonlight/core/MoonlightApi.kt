@@ -76,7 +76,11 @@ interface MoonlightApi {
      */
     fun governor(sessionId: String): Governor = Governor.Daemon
 
-    /** The review of a session the mod governs: files, comments, AI review findings. */
+    /**
+     * The mod's review of a session: files, comments, AI review findings. Also there for a
+     * session the daemon governs, when the mod standing by in it publishes its review;
+     * check [governor] before treating the session as the mod's.
+     */
     fun modReview(sessionId: String): ModReview? = null
 
     /** Hand one operator decision to the mod governing `sessionId`. Blocking — call off the EDT. */

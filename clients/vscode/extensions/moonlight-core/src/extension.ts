@@ -32,6 +32,7 @@ import type {
 } from 'moonlight-control-client';
 import type { ActiveSession, MoonlightApi } from './api';
 import { GateState } from './gate-state';
+import { HerdrCli } from './herdr-cli';
 import { SessionTerminals } from './terminals';
 
 /**
@@ -543,6 +544,7 @@ export function activate(context: vscode.ExtensionContext): MoonlightApi {
       return answer;
     },
     terminals,
+    herdr: new HerdrCli(),
   };
 }
 

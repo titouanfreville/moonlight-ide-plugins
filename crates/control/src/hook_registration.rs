@@ -664,6 +664,12 @@ pub fn run_hook_client(socket: &Path) {
     // never from the payload, which only knows the conversation. This is what lets the
     // daemon follow a process that `/resume`d or `/clear`ed to its new conversation.
     request.launch_id = crate::launches::launch_id_from_env();
+    // The same, for a process no IDE launched: its pid. Only on the prompt hook — it runs
+    // once per turn, and a `/resume` or `/clear` always reaches it before any verb — so
+    // the `ps` this costs never lands on the per-tool path.
+    if request.event == PROMPT_EVENT {
+        request.process_ids = crate::launches::claude_process_ids();
+    }
     let Ok(rt) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

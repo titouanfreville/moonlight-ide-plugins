@@ -42,6 +42,50 @@ pub fn is_launch_id(id: &str) -> bool {
     (8..=64).contains(&id.len()) && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
+/// The Claude Code process this process runs for: its parent, and the parent's parent
+/// when the parent is a shell (Claude Code runs hook commands through one, which may or
+/// may not `exec` them). Both halves call this — the hook client and the stdio MCP
+/// shim — so they name the same pid without either being told it.
+///
+/// Costs one `ps`; callers keep it off hot paths.
+#[cfg(unix)]
+pub fn claude_process_ids() -> Vec<u32> {
+    let parent = std::os::unix::process::parent_id();
+    let mut ids = vec![parent];
+    if let Some((grandparent, command)) = parent_of(parent) {
+        if is_shell(&command) {
+            ids.push(grandparent);
+        }
+    }
+    ids
+}
+
+#[cfg(not(unix))]
+pub fn claude_process_ids() -> Vec<u32> {
+    Vec::new()
+}
+
+#[cfg(unix)]
+fn parent_of(pid: u32) -> Option<(u32, String)> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "ppid=,comm=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    parse_ps_line(&String::from_utf8(out.stdout).ok()?)
+}
+
+/// `ps -o ppid=,comm=` prints `  123 /bin/zsh`: the parent pid, then the command.
+fn parse_ps_line(line: &str) -> Option<(u32, String)> {
+    let (ppid, command) = line.trim().split_once(char::is_whitespace)?;
+    Some((ppid.trim().parse().ok()?, command.trim().to_string()))
+}
+
+/// A login shell shows as `-zsh`; a path as `/bin/sh`.
+fn is_shell(command: &str) -> bool {
+    let name = command.rsplit('/').next().unwrap_or(command).trim_start_matches('-');
+    matches!(name, "sh" | "bash" | "zsh" | "dash" | "fish")
+}
+
 /// What one observation did to a launch's entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchObservation {
@@ -54,9 +98,15 @@ pub enum LaunchObservation {
 }
 
 /// `launch id → the conversation that launch is currently in`.
+///
+/// Also `Claude Code process id → its conversation`, for processes no IDE launched: they
+/// carry no launch id, yet their stdio MCP server is just as stuck on the conversation it
+/// spawned in. Claude Code is the parent of both its hooks (through a shell) and its MCP
+/// servers, so its pid is the one key both halves can name without being told.
 #[derive(Debug, Default)]
 pub struct LaunchRegistry {
     current: RwLock<HashMap<String, SessionId>>,
+    processes: RwLock<HashMap<u32, SessionId>>,
 }
 
 /// The registry, shared between the hook gate (which writes it) and the verb paths and
@@ -94,6 +144,27 @@ impl LaunchRegistry {
     pub fn resolve(&self, launch: &str) -> SessionId {
         self.current(launch)
             .unwrap_or_else(|| SessionId::new(launch.to_string()))
+    }
+
+    /// Record that the Claude Code process `pid` is now in `session`. Called with each pid
+    /// a hook names as its own; pid 0 and 1 name no Claude Code process and are ignored.
+    pub fn observe_process(&self, pid: u32, session: &SessionId) {
+        if pid <= 1 {
+            return;
+        }
+        self.processes
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(pid, session.clone());
+    }
+
+    /// The conversation the Claude Code process `pid` is in now, if a hook has said.
+    pub fn process_current(&self, pid: u32) -> Option<SessionId> {
+        self.processes
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&pid)
+            .cloned()
     }
 
     /// The launch a conversation is currently the subject of, so a client that started
@@ -164,6 +235,51 @@ mod tests {
             Some("aaaaaaaa")
         );
         assert_eq!(launches.launch_of(&sid("nobody")), None);
+    }
+
+    /// A process no IDE launched: its hooks name its pid, and a `/resume` moves it.
+    #[test]
+    fn a_process_follows_the_conversation_its_hooks_report() {
+        let launches = LaunchRegistry::new();
+        assert_eq!(launches.process_current(4242), None);
+        launches.observe_process(4242, &sid("ad055831"));
+        launches.observe_process(4242, &sid("efdf1598"));
+        assert_eq!(launches.process_current(4242), Some(sid("efdf1598")));
+    }
+
+    #[test]
+    fn a_ps_line_reads_as_parent_and_command() {
+        assert_eq!(parse_ps_line("  123 /bin/zsh\n"), Some((123, "/bin/zsh".into())));
+        assert_eq!(parse_ps_line("1 launchd"), Some((1, "launchd".into())));
+        assert_eq!(parse_ps_line(""), None);
+        assert_eq!(parse_ps_line("abc sh"), None);
+    }
+
+    #[test]
+    fn only_shells_count_as_the_hook_wrapper() {
+        assert!(is_shell("/bin/sh"));
+        assert!(is_shell("-zsh"));
+        assert!(is_shell("bash"));
+        assert!(!is_shell("claude"));
+        assert!(!is_shell("/usr/local/bin/node"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn this_process_names_its_parent_first() {
+        assert_eq!(
+            claude_process_ids().first().copied(),
+            Some(std::os::unix::process::parent_id())
+        );
+    }
+
+    #[test]
+    fn pids_that_name_no_claude_process_are_ignored() {
+        let launches = LaunchRegistry::new();
+        launches.observe_process(0, &sid("s"));
+        launches.observe_process(1, &sid("s"));
+        assert_eq!(launches.process_current(0), None);
+        assert_eq!(launches.process_current(1), None);
     }
 
     #[test]

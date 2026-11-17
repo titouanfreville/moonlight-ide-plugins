@@ -10,6 +10,7 @@ import type { ClaudeModState, HeldApproval, ReviewPanelData } from 'moonlight-co
 
 import { effectiveMode, groupSessions, type CustomGroup, type GroupBy } from './grouping';
 import { badge, describe, isFrozen, phaseLabel, PHASES, sessionsFor, statusGlyph, type Badge } from './rows';
+import { emptyGroups, tidyBlocker } from './tidy';
 
 export type Tab = 'sessions' | 'review' | 'ai';
 
@@ -28,6 +29,12 @@ export interface PanelInput {
   /** Whether moonlight-ai-review is installed: without it the review tabs only say so. */
   reviewInstalled: boolean;
   colorBlind: boolean;
+  /** Sessions running in a herdr pane: they get "Show in herdr". */
+  herdrHosted?: ReadonlySet<string>;
+  /** Sessions hidden in this window (already reconciled: none of them is live). */
+  hidden?: ReadonlySet<string>;
+  /** Who governs a session: the Claude Code plugin's sessions are never forgotten here. */
+  governor?: (sessionId: string) => 'mod' | 'daemon';
 }
 
 export interface RowModel {
@@ -50,6 +57,10 @@ export interface GroupModel {
   /** Only a custom group can be renamed or deleted: a project group is derived. */
   customId: string | undefined;
   rows: RowModel[];
+  /** Its sessions that can be hidden: neither working nor waiting on the operator. */
+  tidy: string[];
+  /** Of those, the ones the daemon can forget. */
+  forgettable: string[];
 }
 
 export interface PhaseStep {
@@ -77,6 +88,12 @@ export interface DetailModel {
   hold: HoldModel | undefined;
   /** The custom group the session is in, so "Remove from group" can say which. */
   groupName: string | undefined;
+  /** It runs in a herdr pane, which "Show in herdr" brings forward. */
+  inHerdr: boolean;
+  /** Why it cannot be hidden, or `undefined` when it can. */
+  hideBlocker: string | undefined;
+  /** Why the daemon cannot forget it, or `undefined` when it can. */
+  forgetBlocker: string | undefined;
   unreviewed: number;
 }
 
@@ -90,10 +107,17 @@ export interface PanelModel {
   governed: GroupModel[];
   governedCount: number;
   /** Why the governed list is empty, when it is. */
-  governedEmpty: 'backend-down' | 'no-sessions' | 'none-governed' | undefined;
+  governedEmpty: 'backend-down' | 'no-sessions' | 'none-governed' | 'all-hidden' | undefined;
   /** Whether the Claude Code plugin can be offered as the fix for a missing daemon. */
   offerMod: boolean;
   unadopted: RowModel[];
+  /** The not-gated list's sessions that can be hidden, and forgotten. */
+  unadoptedTidy: string[];
+  unadoptedForgettable: string[];
+  /** Sessions hidden in this window and still listed by the backend. */
+  hiddenCount: number;
+  /** Custom groups none of whose sessions is known any more. */
+  emptyGroups: number;
   detail: DetailModel | undefined;
   /** The session the Review and AI review tabs are about. */
   target: DetailModel | undefined;
@@ -184,26 +208,61 @@ function detail(
     following: input.following === session.session_id,
     hold: hold ? holdModel(hold, input.sessions) : undefined,
     groupName: input.groups.find((g) => g.sessionIds.includes(session.session_id))?.name,
+    inHerdr: input.herdrHosted?.has(session.session_id) ?? false,
+    hideBlocker: tidyBlocker(session, hold !== undefined),
+    forgetBlocker: forgetBlocker(session, input, hold !== undefined),
     unreviewed: session.unreviewed_files,
   };
 }
 
+/**
+ * Why the daemon cannot forget a session, or `undefined`. The Claude Code plugin's
+ * sessions leave the list on their own when they end; with no daemon there is no record
+ * to delete.
+ */
+function forgetBlocker(session: DiscoverableSession, input: PanelInput, held: boolean): string | undefined {
+  if (input.backendError !== undefined) {
+    return 'No MoonlightCode daemon is answering.';
+  }
+  if (input.governor?.(session.session_id) === 'mod') {
+    return 'The Claude Code plugin governs it: it leaves the list when it ends.';
+  }
+  return tidyBlocker(session, held);
+}
+
 export function panelModel(input: PanelInput): PanelModel {
   const holds = new Map(input.holds.map((h) => [h.sessionId, h]));
-  const governedSessions = sessionsFor('governed', input.sessions);
-  const unadoptedSessions = sessionsFor('unadopted', input.sessions);
+  const hidden = input.hidden ?? new Set<string>();
+  const shown = input.sessions.filter((s) => !hidden.has(s.session_id));
+  const governedSessions = sessionsFor('governed', shown);
+  const unadoptedSessions = sessionsFor('unadopted', shown);
+  const tidyOf = (list: readonly DiscoverableSession[]) =>
+    list.filter((s) => tidyBlocker(s, holds.has(s.session_id)) === undefined).map((s) => s.session_id);
+  const forgettableOf = (list: readonly DiscoverableSession[]) =>
+    list.filter((s) => forgetBlocker(s, input, holds.has(s.session_id)) === undefined).map((s) => s.session_id);
   const rowOf = (s: DiscoverableSession, among: readonly DiscoverableSession[]) =>
     row(s, among, holds.get(s.session_id), input.following === s.session_id);
 
   const grouping = groupSessions(governedSessions, effectiveMode('governed', input.groupBy), input.groups);
   const governed: GroupModel[] =
     grouping.kind === 'flat'
-      ? [{ key: 'all', label: '', customId: undefined, rows: grouping.sessions.map((s) => rowOf(s, governedSessions)) }]
+      ? [
+          {
+            key: 'all',
+            label: '',
+            customId: undefined,
+            rows: grouping.sessions.map((s) => rowOf(s, governedSessions)),
+            tidy: tidyOf(grouping.sessions),
+            forgettable: forgettableOf(grouping.sessions),
+          },
+        ]
       : grouping.groups.map((g) => ({
           key: g.key,
           label: g.label,
           customId: g.custom ? g.key.slice('custom:'.length) : undefined,
           rows: g.sessions.map((s) => rowOf(s, governedSessions)),
+          tidy: tidyOf(g.sessions),
+          forgettable: forgettableOf(g.sessions),
         }));
 
   const down = input.backendError !== undefined;
@@ -234,13 +293,19 @@ export function panelModel(input: PanelInput): PanelModel {
     governedEmpty:
       governedSessions.length > 0
         ? undefined
-        : down && input.sessions.length === 0
-          ? 'backend-down'
-          : input.sessions.length === 0
-            ? 'no-sessions'
-            : 'none-governed',
+        : sessionsFor('governed', input.sessions).length > 0
+          ? 'all-hidden'
+          : down && input.sessions.length === 0
+            ? 'backend-down'
+            : input.sessions.length === 0
+              ? 'no-sessions'
+              : 'none-governed',
     offerMod: down && input.claudeMod !== 'active',
     unadopted: unadoptedSessions.map((s) => rowOf(s, unadoptedSessions)),
+    unadoptedTidy: tidyOf(unadoptedSessions),
+    unadoptedForgettable: forgettableOf(unadoptedSessions),
+    hiddenCount: input.sessions.filter((s) => hidden.has(s.session_id)).length,
+    emptyGroups: emptyGroups(input.groups, input.sessions).length,
     detail: selectedSession ? detail(selectedSession, input, holds) : undefined,
     target: target ? detail(target, input, holds) : undefined,
     picker: governedSessions.map((s) => ({ id: s.session_id, name: controlApi.sessionLabel(s, governedSessions) })),

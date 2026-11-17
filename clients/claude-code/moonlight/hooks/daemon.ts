@@ -1,12 +1,14 @@
-// Pure logic of the hand-over with the MoonlightCode daemon. No `$` here, so
-// it is unit-testable.
-//
 // The mod is installed into Claude Code itself, so it loads in every session,
 // whoever launched it (a terminal, Anthropic's VS Code or JetBrains plugin).
 // When the daemon answers and its hooks are installed, the daemon governs and
-// the mod stands by; otherwise the mod governs. A session the mod governs
-// stays the mod's (never two gates with two phases); one on standby is taken
-// over as soon as the daemon stops governing.
+// the mod stands by; otherwise the mod governs. The daemon knows nothing of the
+// mod, so the mod is the one that yields:
+// - a session the mod has governed since it started stays the mod's;
+// - one on standby is taken over as soon as the daemon stops governing, and
+//   handed back once it governs again: it is the daemon's session, the mod only
+//   stood in while it was away (a restart for a newer version, say).
+
+import type { Phase } from './policy'
 
 export type Governor = 'mod' | 'daemon'
 
@@ -64,13 +66,35 @@ export const isHealthy = (text: string): boolean => {
   }
 }
 
-// Who governs from now on. The mod never hands a session back: its phase and
-// sandbox are in force, and a second gate would hold a second phase.
+// Who governs from now on.
 // `misses`: probes missed in a row while the daemon governed (a session that
 // starts with no daemon is the mod's at once).
-export const nextGovernor = (current: Governor | undefined, daemonGoverns: boolean, misses = 0): Governor =>
+// `standIn`: the mod took this session over from a daemon that stopped, so it
+// hands it back as soon as the daemon governs again.
+export const nextGovernor = (
+  current: Governor | undefined,
+  daemonGoverns: boolean,
+  misses = 0,
+  standIn = false,
+): Governor =>
   current === 'mod'
-    ? 'mod'
+    ? standIn && daemonGoverns
+      ? 'daemon'
+      : 'mod'
     : daemonGoverns || (current === 'daemon' && misses < TAKEOVER_AFTER_MISSES)
       ? 'daemon'
       : 'mod'
+
+// Ticks between two probes for the daemon's return while the mod stands in:
+// gating-status reads the hook registrations, too costly for every tick.
+export const HANDBACK_PROBE_TICKS = 3
+
+// The daemon's name for each mod phase (`POST /control/phase`), so the session
+// goes back in the phase it is in: a hand-back must not change what the agent may do.
+export const DAEMON_PHASE: Readonly<Record<Phase, string>> = {
+  plan: 'Plan',
+  auto: 'AutoImplement',
+  test: 'Test',
+  review: 'Review',
+  commit: 'Commit',
+}

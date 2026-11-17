@@ -24,6 +24,7 @@ import type {
   UsageResponse,
 } from 'moonlight-control-client';
 import type { ClaudeModState } from './claude-mod';
+import type { Placement } from './herdr';
 import type { ModAnswer, ModEntry, ModFinding, ModReview } from './mod-bridge';
 
 /** Terminals this extension family started — the only sessions we can write to. */
@@ -33,11 +34,40 @@ export interface OwnedTerminals {
    * `--session-id`. Owning the launch is what later makes governance and review
    * delivery reliable rather than best-effort.
    */
-  start(sessionId: string, cwd: string | undefined): vscode.Terminal;
+  start(sessionId: string, cwd: string | undefined, options?: StartOptions): vscode.Terminal;
   get(sessionId: string): vscode.Terminal | undefined;
   has(sessionId: string): boolean;
   /** Adopt an already-open terminal as a session's host, on the operator's say-so. */
   adopt(sessionId: string, terminal: vscode.Terminal): void;
+}
+
+/** How a session is started. */
+export interface StartOptions {
+  /**
+   * Whether the daemon governs it, and so binds its MCP endpoint first. Without a daemon,
+   * the Claude Code plugin governs every session it runs in and brings its own verbs:
+   * asking the daemon would only fail and warn. Defaults to true.
+   */
+  daemon?: boolean;
+}
+
+/**
+ * herdr, as a place to run sessions: panes of the herdr server outlive the editor, and
+ * herdr's Claude integration reports each pane's session id. Missing on Windows, and
+ * `available()` is false while no herdr server runs.
+ */
+export interface HerdrHost {
+  available(): Promise<boolean>;
+  /** Where a new session can go, best first; see `herdr.ts`. */
+  placements(roots: readonly string[], lastUsed: string | undefined, repoName: string): Promise<Placement[]>;
+  /** Start Claude Code with our session id in a new pane at `placement`. */
+  start(sessionId: string, placement: Placement, cwd: string, options?: StartOptions): Promise<{ pane: string; workspaceId: string | undefined }>;
+  /** The sessions herdr hosts now (cached a few seconds). */
+  hosted(): Promise<ReadonlySet<string>>;
+  /** Bring the session's pane forward in herdr; false when herdr does not host it. */
+  focus(sessionId: string): Promise<boolean>;
+  /** Submit `text` to the session as a prompt; false when herdr does not host it. */
+  prompt(sessionId: string, text: string): Promise<boolean>;
 }
 
 /**
@@ -192,6 +222,9 @@ export interface MoonlightApi {
 
   readonly terminals: OwnedTerminals;
 
+  /** herdr, when this core has it (older cores do not): see {@link HerdrHost}. */
+  readonly herdr?: HerdrHost;
+
   /**
    * The session the operator is working in, or `undefined` when it cannot be told
    * apart from the others. Ambiguity is reported, never guessed away.
@@ -283,6 +316,7 @@ export type AiReviewAction =
   | { type: 'accept' };
 
 export type { ClaudeModState } from './claude-mod';
+export type { HerdrWorkspace, Placement } from './herdr';
 export type {
   ModAnswer,
   ModEntry,

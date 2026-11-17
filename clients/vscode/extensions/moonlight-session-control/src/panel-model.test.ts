@@ -110,3 +110,45 @@ test('custom groups keep an empty group and name the one a session is in', () =>
   ]);
   assert.equal(model.detail?.groupName, 'Release');
 });
+
+test('hidden sessions leave both lists, and the counts say how many', () => {
+  const model = panelModel(
+    input({
+      sessions: [session('a'), session('b'), session('free', { adopted: false })],
+      hidden: new Set(['b', 'free']),
+      groups: [{ id: 'g', name: 'Stale', sessionIds: ['gone'] }],
+    })
+  );
+  assert.deepEqual(model.governed.flatMap((g) => g.rows.map((r) => r.id)), ['a']);
+  assert.equal(model.unadopted.length, 0);
+  assert.equal(model.hiddenCount, 2);
+  assert.equal(model.emptyGroups, 1);
+});
+
+test('every governed session hidden reads as such, not as "none governed"', () => {
+  const model = panelModel(input({ sessions: [session('a')], hidden: new Set(['a']) }));
+  assert.equal(model.governedEmpty, 'all-hidden');
+});
+
+test('a group offers to tidy its ended sessions; forget only what the daemon governs', () => {
+  const model = panelModel(
+    input({
+      sessions: [session('done'), session('busy', { status: 'Running' }), session('held'), session('mod')],
+      holds: [hold('held')],
+      governor: (id) => (id === 'mod' ? 'mod' : 'daemon'),
+    })
+  );
+  const g = model.governed[0];
+  assert.deepEqual(g.tidy.sort(), ['done', 'mod']);
+  assert.deepEqual(g.forgettable, ['done']);
+});
+
+test('the detail says why a session cannot be hidden or forgotten', () => {
+  const busy = panelModel(input({ sessions: [session('a', { status: 'Running' })], selected: 'a' })).detail;
+  assert.equal(busy?.hideBlocker, 'It is working.');
+  const mod = panelModel(input({ sessions: [session('a')], selected: 'a', governor: () => 'mod' })).detail;
+  assert.equal(mod?.hideBlocker, undefined);
+  assert.match(mod?.forgetBlocker ?? '', /Claude Code plugin governs it/);
+  const down = panelModel(input({ sessions: [session('a')], selected: 'a', backendError: 'refused' })).detail;
+  assert.match(down?.forgetBlocker ?? '', /No MoonlightCode daemon/);
+});

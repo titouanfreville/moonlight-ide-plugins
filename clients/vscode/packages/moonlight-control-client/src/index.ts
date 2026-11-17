@@ -418,6 +418,16 @@ export function adopt(sessionId: string): Promise<void> {
 }
 
 /**
+ * Forget a session: the daemon drops it and deletes its stored record (the transcript
+ * stays). It comes back only if it works again. A session working or waiting on the
+ * operator is refused (409), as is one the daemon does not know (404); a daemon older than
+ * the endpoint answers 404 too, for every session.
+ */
+export function forget(sessionId: string): Promise<void> {
+  return request('POST', '/control/forget', { session_id: sessionId });
+}
+
+/**
  * Move a session to an explicit phase (an operator override — the engine pins it).
  * This is the escape hatch from `Plan`, where project writes are denied: without it,
  * adopting a session from an editor freezes it with no way back.
@@ -542,6 +552,16 @@ export function launchCommand(sessionId: string, mcpFlag: string): string | unde
 }
 
 /**
+ * The `--mcp-config` value that wires `url` in as the session's `moonlight` server, as
+ * plain JSON: for launches that pass arguments as a list, with no shell in between
+ * (herdr's `agent start`). `undefined` when the URL is not one we will run.
+ */
+export function mcpConfigJson(url: string): string | undefined {
+  const safe = safeEndpointUrl(url);
+  return safe === undefined ? undefined : JSON.stringify({ mcpServers: { moonlight: { type: 'http', url: safe } } });
+}
+
+/**
  * The `--mcp-config` fragment (leading space included) that wires `url` in as the
  * session's `moonlight` server. `undefined` when the URL is not one we will run.
  *
@@ -552,12 +572,8 @@ export function launchCommand(sessionId: string, mcpFlag: string): string | unde
  * Enter. Validated first, then quoted properly.
  */
 export function mcpConfigFlag(url: string): string | undefined {
-  const safe = safeEndpointUrl(url);
-  if (safe === undefined) {
-    return undefined;
-  }
-  const json = JSON.stringify({ mcpServers: { moonlight: { type: 'http', url: safe } } });
-  return ` --mcp-config ${shellQuote(json)}`;
+  const json = mcpConfigJson(url);
+  return json === undefined ? undefined : ` --mcp-config ${shellQuote(json)}`;
 }
 
 /** A hold currently waiting on an operator, as `GET /control/pending-approvals` reports it. */

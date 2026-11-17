@@ -28,6 +28,12 @@ pub struct HookRequest {
     /// the MCP endpoint it was launched with. Absent for sessions no IDE launched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_id: Option<String>,
+    /// The Claude Code process this hook runs for, as the hook client found it from its
+    /// own process tree: its parent, and the parent's parent when the parent is the shell
+    /// Claude Code runs hooks through. Ties a process no IDE launched to its stdio MCP
+    /// server, which names the same pid as its parent. Empty for hooks that do not look.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_ids: Vec<u32>,
 }
 
 /// The control server's verdict for a hook request.

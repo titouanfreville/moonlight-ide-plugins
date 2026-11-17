@@ -110,6 +110,90 @@ class ResumeSessionAction : SessionAction() {
     }
 }
 
+/** Bring the row's herdr pane forward: shown only for a session herdr hosts (cached, so cheap on BGT). */
+class ShowInHerdrAction : SessionAction() {
+    override fun update(e: AnActionEvent) {
+        val project = e.project
+        val id = session(e)?.sessionId
+        showOnRow(e, project != null && id != null && HerdrService.of(project).cli.hosts(id))
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        SessionOps.showInHerdr(e.project ?: return, session(e)?.sessionId ?: return)
+    }
+}
+
+/** Hide the row's session in this project until it works again. */
+class HideSessionAction : SessionAction() {
+    override fun update(e: AnActionEvent) = showOnRow(e, session(e)?.let(TidyOps::canHide) == true)
+
+    override fun actionPerformed(e: AnActionEvent) {
+        TidyOps.hide(e.project ?: return, listOf(session(e)?.sessionId ?: return))
+    }
+}
+
+/** Forget the row's session in the daemon: its record goes, the transcript stays. */
+class ForgetSessionAction : SessionAction() {
+    override fun update(e: AnActionEvent) = showOnRow(e, session(e)?.let(TidyOps::canForget) == true)
+
+    override fun actionPerformed(e: AnActionEvent) {
+        TidyOps.forget(e.project ?: return, listOf(session(e)?.sessionId ?: return))
+    }
+}
+
+/** Hide every ended session of the selected group. */
+class HideEndedInGroupAction : SessionAction() {
+    private fun group(e: AnActionEvent) = (node(e) as? Node.Group)?.group
+
+    override fun update(e: AnActionEvent) {
+        val count = group(e)?.let { TidyOps.tidyIn(it).size } ?: 0
+        e.presentation.text = "Hide Ended Sessions" + if (count > 0) " ($count)" else ""
+        showOnRow(e, count > 0)
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        val group = group(e) ?: return
+        TidyOps.hide(e.project ?: return, TidyOps.tidyIn(group).map { it.sessionId })
+    }
+}
+
+/** Forget every ended session of the selected group in the daemon. */
+class ForgetEndedInGroupAction : SessionAction() {
+    private fun group(e: AnActionEvent) = (node(e) as? Node.Group)?.group
+
+    override fun update(e: AnActionEvent) {
+        val count = group(e)?.let { TidyOps.forgettableIn(it).size } ?: 0
+        e.presentation.text = "Forget Ended Sessions…" + if (count > 0) " ($count)" else ""
+        showOnRow(e, count > 0)
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        val group = group(e) ?: return
+        TidyOps.forget(e.project ?: return, TidyOps.forgettableIn(group).map { it.sessionId })
+    }
+}
+
+/** Pick hidden sessions to show again; the count is in the label. */
+class ShowHiddenAction : SessionAction() {
+    override fun update(e: AnActionEvent) {
+        val project = e.project
+        val count = project?.let { SessionControlSettings.of(it).hidden().size } ?: 0
+        e.presentation.text = "MoonlightCode: Show Hidden Sessions" + if (count > 0) " ($count)" else ""
+        e.presentation.isEnabled = count > 0
+        e.presentation.isVisible = project != null
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        TidyOps.showHidden(e.project ?: return)
+    }
+}
+
+class RemoveEmptyGroupsAction : SessionAction() {
+    override fun actionPerformed(e: AnActionEvent) {
+        TidyOps.removeEmptyGroups(e.project ?: return)
+    }
+}
+
 /** Auto-resume on or off for this project — Automatic, or back to the default, Ask. */
 class AutoResumeToggleAction : ToggleAction(), DumbAware {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT

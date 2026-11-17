@@ -30,17 +30,29 @@ import type { DiscoverableSession } from 'moonlight-control-client';
  * `attempted` carries the ids already tried. A session that failed to adopt — or that
  * the daemon has not yet reported back as adopted — must not be retried on every poll,
  * which for a five-second loop would be a request storm against a failing endpoint.
+ *
+ * `modGoverned` is `core.governor(id) === 'mod'`: a session the MoonlightCode mod inside
+ * Claude Code governs keeps its own gate. Adopting it would put it under a second gate
+ * in a second phase.
  */
 export function sessionsToAdopt(
   sessions: readonly DiscoverableSession[],
   owns: (sessionId: string) => boolean,
-  attempted: ReadonlySet<string>
+  attempted: ReadonlySet<string>,
+  modGoverned: (sessionId: string) => boolean = () => false
 ): readonly DiscoverableSession[] {
   return sessions.filter(
     (session) =>
-      !session.adopted && !attempted.has(session.session_id) && owns(session.session_id)
+      !session.adopted &&
+      !attempted.has(session.session_id) &&
+      owns(session.session_id) &&
+      !modGoverned(session.session_id)
   );
 }
+
+/** What the operator is told when adopting a session the mod governs. */
+export const MOD_GOVERNED_ADOPT =
+  'This session is governed by the MoonlightCode plugin inside Claude Code, which keeps it: set its phase from the plugin (or this panel), not by adopting it.';
 
 /**
  * Ids worth forgetting, so a session that is adopted and later released can be adopted

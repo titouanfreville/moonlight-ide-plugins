@@ -1,6 +1,6 @@
 {
   "name": "moonlightcode",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "MoonlightCode for Claude Code: workflow phases, with Plan as a read-only boundary while Claude Code runs in auto mode",
   "author": {
     "name": "Titouan Freville",

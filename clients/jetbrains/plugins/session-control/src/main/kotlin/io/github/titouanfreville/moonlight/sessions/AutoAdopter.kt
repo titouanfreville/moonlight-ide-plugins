@@ -6,6 +6,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
+import io.github.titouanfreville.moonlight.core.Governor
 import io.github.titouanfreville.moonlight.core.MoonlightApi
 import io.github.titouanfreville.moonlight.core.MoonlightListener
 
@@ -40,7 +41,13 @@ class AutoAdopter(private val project: Project) : Disposable {
         staleAttempts(attempted, sessions).forEach(attempted::remove)
         // Owned by exactly one window (core picks it), so two windows on the same folder do
         // not both adopt — and a session no window claims is left for the operator.
-        val taking = sessionsToAdopt(sessions, { core.ownsSession(project, it) }, attempted)
+        // A session the mod inside Claude Code governs keeps its own gate.
+        val taking = sessionsToAdopt(
+            sessions,
+            { core.ownsSession(project, it) },
+            attempted,
+            { core.governor(it) == Governor.Mod },
+        )
         if (taking.isEmpty()) return
         adopting = true
         taking.forEach { attempted += it.sessionId }

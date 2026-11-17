@@ -2,7 +2,7 @@
   "name": "moonlight-session-control",
   "displayName": "MoonlightCode Session Control",
   "description": "Adopt Claude Code sessions into governance, set their workflow phase, and start governed sessions.",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": false,
   "publisher": "titouanfreville",
   "license": "MIT",
@@ -55,7 +55,7 @@
       },
       {
         "command": "moonlight.sessionControl.startSession",
-        "title": "MoonlightCode: Start Session in Owned Terminal",
+        "title": "MoonlightCode: Start a Governed Session",
         "icon": "$(add)"
       },
       {
@@ -101,7 +101,7 @@
       },
       {
         "command": "moonlight.sessions.addToGroup",
-        "title": "Add to Group…",
+        "title": "Add to Group\u2026",
         "category": "MoonlightCode",
         "icon": "$(folder)"
       },
@@ -121,6 +121,38 @@
         "title": "Delete Group",
         "category": "MoonlightCode",
         "icon": "$(trash)"
+      },
+      {
+        "command": "moonlight.sessions.showInHerdr",
+        "title": "MoonlightCode: Show Session in herdr",
+        "icon": "$(server-process)"
+      },
+      {
+        "command": "moonlight.sessions.hide",
+        "title": "MoonlightCode: Hide Session in This Window",
+        "icon": "$(eye-closed)"
+      },
+      {
+        "command": "moonlight.sessions.forget",
+        "title": "MoonlightCode: Forget Session",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "moonlight.sessions.hideSessions",
+        "title": "MoonlightCode: Hide Sessions"
+      },
+      {
+        "command": "moonlight.sessions.forgetSessions",
+        "title": "MoonlightCode: Forget Sessions"
+      },
+      {
+        "command": "moonlight.sessions.showHidden",
+        "title": "MoonlightCode: Show Hidden Sessions",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "moonlight.sessions.removeEmptyGroups",
+        "title": "MoonlightCode: Remove Empty Session Groups"
       }
     ],
     "viewsContainers": {
@@ -157,9 +189,48 @@
           "command": "moonlight.sessions.refresh",
           "when": "view == moonlight.panel",
           "group": "navigation@3"
+        },
+        {
+          "command": "moonlight.sessions.showHidden",
+          "when": "view == moonlight.panel",
+          "group": "2_tidy@1"
+        },
+        {
+          "command": "moonlight.sessions.removeEmptyGroups",
+          "when": "view == moonlight.panel",
+          "group": "2_tidy@2"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "moonlight.sessions.showInHerdr",
+          "when": "false"
+        },
+        {
+          "command": "moonlight.sessions.hide",
+          "when": "false"
+        },
+        {
+          "command": "moonlight.sessions.forget",
+          "when": "false"
+        },
+        {
+          "command": "moonlight.sessions.hideSessions",
+          "when": "false"
+        },
+        {
+          "command": "moonlight.sessions.forgetSessions",
+          "when": "false"
         }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "moonlight.sessionControl.startSession",
+        "key": "ctrl+alt+shift+m",
+        "mac": "cmd+alt+shift+m"
+      }
+    ]
   },
   "keywords": [
     "claude",

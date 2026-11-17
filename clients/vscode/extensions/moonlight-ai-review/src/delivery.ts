@@ -22,7 +22,7 @@
  */
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
-import type { OwnedTerminals } from 'moonlight-core';
+import type { HerdrHost, OwnedTerminals } from 'moonlight-core';
 
 export type Delivery =
   | { kind: 'terminal'; detail: string }
@@ -53,7 +53,8 @@ export async function deliver(
   terminals: OwnedTerminals,
   sessionId: string,
   text: string,
-  reviewPath: string | undefined
+  reviewPath: string | undefined,
+  herdr?: HerdrHost
 ): Promise<Delivery> {
   const oneLine = text.replace(/\s*\n\s*/g, ' ').trim();
   const terminal = terminals.get(sessionId);
@@ -63,6 +64,18 @@ export async function deliver(
     terminal.sendText(oneLine, true);
     terminal.show();
     return { kind: 'terminal', detail: terminal.name };
+  }
+  // A session in a herdr pane: herdr submits it as one prompt (bracketed paste, then
+  // Enter), and refuses an agent stuck on a question rather than typing over it — a
+  // refusal falls through to the honest path below.
+  if (herdr) {
+    try {
+      if (await herdr.prompt(sessionId, oneLine)) {
+        return { kind: 'terminal', detail: 'its herdr pane' };
+      }
+    } catch {
+      // Not delivered: say so below.
+    }
   }
   // Nothing we can write to. Put the pointer where the operator can use it in one
   // gesture, and say plainly that the agent has not been told.

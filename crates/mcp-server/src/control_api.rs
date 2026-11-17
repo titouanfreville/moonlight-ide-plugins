@@ -239,6 +239,11 @@ pub struct AdoptRequest {
     pub session_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ForgetRequest {
+    pub session_id: String,
+}
+
 /// The "before" side of a file, plus what kind of baseline it is — the plugin needs
 /// the *content* (to render a real diff editor), not a pre-rendered unified diff.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -582,6 +587,11 @@ pub struct VerbRequest {
     /// spawned, and goes stale on `/resume` or `/clear`.
     #[serde(default)]
     pub launch_id: Option<String>,
+    /// The Claude Code process the caller runs for ([`moonlight_control::claude_process_ids`]),
+    /// for a process no IDE launched: the hooks map each pid to the conversation it is in
+    /// now. Consulted only when there is no launch id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub process_ids: Vec<u32>,
     pub verb: moonlight_domain::trust::McpVerb,
     #[serde(default)]
     pub payload: String,
@@ -631,7 +641,11 @@ async fn run_verb(
         .filter(|l| moonlight_control::is_launch_id(l))
     {
         Some(launch) => host.resolve_launch(launch),
-        None => SessionId::new(body.session_id),
+        None => body
+            .process_ids
+            .iter()
+            .find_map(|&pid| state.launches.as_ref()?.process_current(pid))
+            .unwrap_or_else(|| SessionId::new(body.session_id)),
     };
     let request = moonlight_domain::ports::mcp::ActorRequest {
         session,
@@ -813,6 +827,7 @@ pub fn router(state: ControlApiState) -> Router {
         .route("/control/review-queue/reject", post(reject))
         .route("/control/discoverable-sessions", get(discoverable_sessions))
         .route("/control/adopt", post(adopt))
+        .route("/control/forget", post(forget))
         .route("/control/review/baseline", get(baseline))
         .route("/control/review/comments", get(comments).post(add_comment))
         .route("/control/review/comments/update", post(update_comment))
@@ -1261,6 +1276,39 @@ async fn adopt(State(state): State<ControlApiState>, Json(body): Json<AdoptReque
             session,
             adopted: true,
         })
+        .is_err()
+    {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
+    StatusCode::ACCEPTED
+}
+
+/// Forget a session: drop it from the fleet and delete its stored record, so an editor
+/// stops listing a conversation that ended long ago. The transcript on disk is untouched,
+/// and detection only follows transcripts being written — so a forgotten session comes
+/// back exactly when it works again, and never on a rescan.
+///
+/// A session that is working or waiting on the operator is refused with `409`: it would
+/// be back on its next line, and forgetting one that holds the operator's attention
+/// would only hide what it is waiting for. `404` for a session the fleet has never seen,
+/// as for adopt: the engine drops a command for an unknown session silently.
+async fn forget(
+    State(state): State<ControlApiState>,
+    Json(body): Json<ForgetRequest>,
+) -> StatusCode {
+    let session = SessionId::new(body.session_id);
+    let Some(known) = state.fleet.get(&session) else {
+        return StatusCode::NOT_FOUND;
+    };
+    if matches!(
+        known.status,
+        SessionStatus::Running | SessionStatus::WaitingInput
+    ) {
+        return StatusCode::CONFLICT;
+    }
+    if state
+        .commands
+        .send(Command::ForgetSession { session })
         .is_err()
     {
         return StatusCode::SERVICE_UNAVAILABLE;
@@ -2348,6 +2396,7 @@ mod tests {
             Json(VerbRequest {
                 session_id: "s1".into(),
                 launch_id: None,
+                process_ids: Vec::new(),
                 verb: moonlight_domain::trust::McpVerb::PhaseStatus,
                 payload: String::new(),
             }),
@@ -2398,6 +2447,7 @@ mod tests {
         let verb = |launch_id: Option<&str>| VerbRequest {
             session_id: "a05a347e".into(),
             launch_id: launch_id.map(str::to_string),
+            process_ids: Vec::new(),
             verb: moonlight_domain::trust::McpVerb::PhaseStatus,
             payload: String::new(),
         };
@@ -2410,8 +2460,134 @@ mod tests {
         assert_eq!(plain.output, "a05a347e");
     }
 
+    /// A process no IDE launched: no launch id, so its pid leads to the conversation the
+    /// hooks report — the split that left a session gated in Plan while its verbs said Auto.
+    #[tokio::test]
+    async fn a_verb_from_an_unlaunched_process_follows_its_pid() {
+        let launches: moonlight_control::SharedLaunches =
+            Arc::new(moonlight_control::LaunchRegistry::new());
+        launches.observe_process(4242, &SessionId::new("efdf1598"));
+        let host = crate::McpHost::with_scope(
+            Arc::new(EchoSessionActor),
+            Arc::new(crate::BusPolicyView::new()),
+            crate::VerbScope::WorkflowOnly,
+        )
+        .with_launches(launches.clone());
+        let state = threaded_state()
+            .with_launches(launches)
+            .with_mcp_host(Arc::new(host));
+
+        let verb = |process_ids: Vec<u32>| VerbRequest {
+            session_id: "ad055831".into(),
+            launch_id: None,
+            process_ids,
+            verb: moonlight_domain::trust::McpVerb::PhaseStatus,
+            payload: String::new(),
+        };
+        // The shim names the shell first when its command was wrapped; the next pid wins.
+        let Json(moved) = run_verb(State(state.clone()), Json(verb(vec![7, 4242])))
+            .await
+            .unwrap();
+        assert_eq!(moved.output, "efdf1598");
+        // A pid no hook has named leaves the spawn-time id in force.
+        let Json(unknown) = run_verb(State(state), Json(verb(vec![9999]))).await.unwrap();
+        assert_eq!(unknown.output, "ad055831");
+    }
+
     /// State backed by a real store, so the thread tests exercise actual persistence
     /// rather than a fake that agrees with them.
+    /// A state whose fleet holds `sessions`, with the engine's command channel kept to
+    /// read what the handler sent.
+    fn fleet_state(
+        sessions: &[(&str, SessionStatus)],
+    ) -> (
+        ControlApiState,
+        tokio::sync::mpsc::UnboundedReceiver<Command>,
+    ) {
+        let fleet = Arc::new(BusFleetView::new());
+        for (id, status) in sessions {
+            fleet.apply(&moonlight_engine::EngineEvent::SessionUpserted {
+                session: moonlight_domain::session::Session {
+                    id: SessionId::new(*id),
+                    title: None,
+                    status: *status,
+                    phase: Phase::Plan,
+                    mode: Mode::Auto,
+                    trust_tier: TrustTier::Observed,
+                    attached_path: None,
+                    pinned: false,
+                    adopted: true,
+                    paused: false,
+                    phase_pinned: false,
+                    hidden: false,
+                    last_activity: Timestamp::from_millis(0),
+                },
+            });
+        }
+        let sessions: Arc<dyn ManagedSessionStore> = Arc::new(FakeSessions(vec![]));
+        let changes: Arc<dyn SessionChangeStore> = Arc::new(FakeChanges::default());
+        let (commands, command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = ControlApiState::new(
+            commands,
+            sessions,
+            changes,
+            Vec::new,
+            || FeedbackDelivery::Queued,
+            fleet,
+            EventBus::new(16),
+        );
+        (state, command_rx)
+    }
+
+    /// An ended session is forgotten through the engine's own command, which deletes its
+    /// stored record and announces the removal.
+    #[tokio::test]
+    async fn forgetting_an_ended_session_sends_the_engine_forget() {
+        let (state, mut rx) = fleet_state(&[("old", SessionStatus::Idle)]);
+        let status = forget(
+            State(state),
+            Json(ForgetRequest {
+                session_id: "old".into(),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(
+            matches!(rx.try_recv(), Ok(Command::ForgetSession { session }) if session.as_str() == "old")
+        );
+    }
+
+    /// Working, or waiting on the operator: refused, and nothing reaches the engine.
+    #[tokio::test]
+    async fn a_live_session_is_not_forgotten() {
+        for live in [SessionStatus::Running, SessionStatus::WaitingInput] {
+            let (state, mut rx) = fleet_state(&[("busy", live)]);
+            let status = forget(
+                State(state),
+                Json(ForgetRequest {
+                    session_id: "busy".into(),
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{live:?}");
+            assert!(rx.try_recv().is_err(), "{live:?} must not be forgotten");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unknown_session_is_404() {
+        let (state, mut rx) = fleet_state(&[]);
+        let status = forget(
+            State(state),
+            Json(ForgetRequest {
+                session_id: "nope".into(),
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(rx.try_recv().is_err());
+    }
+
     fn threaded_state() -> ControlApiState {
         let sessions: Arc<dyn ManagedSessionStore> = Arc::new(FakeSessions(vec![]));
         let changes: Arc<dyn SessionChangeStore> =

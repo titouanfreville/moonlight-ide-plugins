@@ -183,25 +183,29 @@ class ClaudeTerminal private constructor(
             return null
         }
         var flags = ""
-        try {
-            val url = MoonlightService.getInstance().control.mcpEndpoint(launchId)
-            val flag = mcpConfigFlag(url)
-            if (flag == null) {
-                // A non-loopback or non-http endpoint is not something we put on a command line.
+        // Without a daemon the Claude Code plugin governs, with its own verbs: there is no
+        // endpoint to bind, and asking would only fail and warn about verbs it does have.
+        if (MoonlightService.getInstance().backendError() == null) {
+            try {
+                val url = MoonlightService.getInstance().control.mcpEndpoint(launchId)
+                val flag = mcpConfigFlag(url)
+                if (flag == null) {
+                    // A non-loopback or non-http endpoint is not something we put on a command line.
+                    MoonlightService.notify(
+                        "MoonlightCode: refusing an unexpected MCP endpoint ($url). The session starts without the moonlight verbs.",
+                        NotificationType.WARNING,
+                        project,
+                    )
+                } else {
+                    flags = flag
+                }
+            } catch (e: Exception) {
                 MoonlightService.notify(
-                    "MoonlightCode: refusing an unexpected MCP endpoint ($url). The session starts without the moonlight verbs.",
+                    "MoonlightCode: no MCP endpoint for this session (${e.message}). It starts without the moonlight verbs — it cannot propose a plan or request a phase.",
                     NotificationType.WARNING,
                     project,
                 )
-            } else {
-                flags = flag
             }
-        } catch (e: Exception) {
-            MoonlightService.notify(
-                "MoonlightCode: no MCP endpoint for this session (${e.message}). It starts without the moonlight verbs — it cannot propose a plan or request a phase.",
-                NotificationType.WARNING,
-                project,
-            )
         }
         // Both export the launch id, which is what keeps this session's verbs working if it
         // later `/resume`s or `/clear`s into another conversation — and across a relaunch.

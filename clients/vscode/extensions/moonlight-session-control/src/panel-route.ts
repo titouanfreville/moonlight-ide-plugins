@@ -6,7 +6,7 @@
 import type { DiscoverableSession, Phase } from 'moonlight-control-client';
 import type { AiReviewAction } from 'moonlight-core';
 
-import type { Tab } from './panel-model';
+import type { PanelModel, Tab } from './panel-model';
 import { PHASES } from './rows';
 
 export type Inbound =
@@ -20,7 +20,9 @@ export type Inbound =
   | { type: 'acceptFile'; id: string; path: string }
   | { type: 'commentFile'; id: string; path: string }
   | { type: 'ai'; id: string; action: AiReviewAction }
-  | { type: 'openFinding'; id: string; file: string; line: number };
+  | { type: 'openFinding'; id: string; file: string; line: number }
+  /** Hide or forget the tidy-able sessions of a group (`group` is its key, or `unadopted`). */
+  | { type: 'tidy'; action: 'hide' | 'forget'; group: string };
 
 /** The node shape session commands take — what a tree row used to hand them. */
 interface SessionNode {
@@ -52,6 +54,9 @@ const SESSION_COMMANDS: Record<string, string> = {
   follow: 'moonlight.sessions.setActive',
   addToGroup: 'moonlight.sessions.addToGroup',
   removeFromGroup: 'moonlight.sessions.removeFromGroup',
+  showInHerdr: 'moonlight.sessions.showInHerdr',
+  hide: 'moonlight.sessions.hide',
+  forget: 'moonlight.sessions.forget',
 };
 
 const PLAIN_COMMANDS: Record<string, string> = {
@@ -59,6 +64,8 @@ const PLAIN_COMMANDS: Record<string, string> = {
   refresh: 'moonlight.sessions.refresh',
   createGroup: 'moonlight.sessions.createGroup',
   installMod: 'moonlight.core.installClaudeMod',
+  showHidden: 'moonlight.sessions.showHidden',
+  removeEmptyGroups: 'moonlight.sessions.removeEmptyGroups',
   reviewPlan: 'moonlight.sessions.reviewPlan',
   answerHold: 'moonlight.sessions.answerHold',
 };
@@ -155,4 +162,20 @@ export function isAiAction(action: unknown): action is AiReviewAction {
 /** The tabs a message may switch to: the saved state must never hold anything else. */
 export function isTab(tab: unknown): tab is Tab {
   return tab === 'sessions' || tab === 'review' || tab === 'ai';
+}
+
+/**
+ * The sessions a group-wide tidy acts on, from the model the page was drawn from: the
+ * page names a group, never a list of ids, so it cannot reach past what it showed.
+ */
+export function tidyTargets(
+  model: Pick<PanelModel, 'governed' | 'unadoptedTidy' | 'unadoptedForgettable'>,
+  action: 'hide' | 'forget',
+  group: string
+): string[] {
+  if (group === 'unadopted') {
+    return action === 'hide' ? model.unadoptedTidy : model.unadoptedForgettable;
+  }
+  const g = model.governed.find((x) => x.key === group);
+  return g ? (action === 'hide' ? g.tidy : g.forgettable) : [];
 }

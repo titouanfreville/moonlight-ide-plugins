@@ -223,7 +223,9 @@ internal class AiReviewPanel(private val project: Project, private val toolWindo
     /** Redraw from the mod's review, keeping the session and the finding picked. */
     fun render() {
         val all = core.sessions()
-        val mod = all.filter { ReviewSource.isModSession(it.sessionId) }
+        // Every session the mod runs a review in, whoever governs it: under the daemon, the
+        // mod stands by for the gate but keeps the review (and its decisions).
+        val mod = all.filter { core.modReview(it.sessionId) != null }
         // An explicit request first, then a session newly picked in Sessions, when it has a review here.
         // Read the pick even when a request wins, so it does not come back on the next render.
         val fromSessions = selection.fresh { id -> mod.any { it.sessionId == id } }
@@ -238,10 +240,10 @@ internal class AiReviewPanel(private val project: Project, private val toolWindo
             choices.firstOrNull { it.sessionId == requested }?.let { sessions.selectedItem = it }
         }
         val sessionId = selectedSession()
-        val review = sessionId?.let { ReviewSource.modReview(it) }
+        val review = sessionId?.let { core.modReview(it) }
         if (review == null) {
             showStatus(if (mod.isEmpty()) {
-                "AI review runs in sessions the MoonlightCode plugin for Claude Code governs, and none is running."
+                "AI review runs in sessions with the MoonlightCode plugin for Claude Code, and none is running."
             } else {
                 "This session's Claude Code plugin publishes no review yet: update the plugin."
             })

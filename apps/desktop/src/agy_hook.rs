@@ -55,6 +55,7 @@ pub fn normalize(payload: &Value) -> HookRequest {
         tool_input,
         cwd,
         launch_id: None,
+        process_ids: Vec::new(),
     }
 }
 

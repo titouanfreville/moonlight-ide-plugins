@@ -37,7 +37,8 @@ pub use hook_registration::{
 };
 pub use ipc::{HookRequest, HookResponse};
 pub use launches::{
-    is_launch_id, launch_id_from_env, LaunchObservation, LaunchRegistry, SharedLaunches, LAUNCH_ENV,
+    claude_process_ids, is_launch_id, launch_id_from_env, LaunchObservation, LaunchRegistry,
+    SharedLaunches, LAUNCH_ENV,
 };
 pub use paths::{classify_write_scope, AiWorkspace, AiWorkspaceConfig};
 pub use pending::{ApprovalNotifier, Decision, HeldApproval, PendingApprovals};

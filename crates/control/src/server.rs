@@ -439,7 +439,16 @@ impl ControlServer {
     }
 
     fn observe_launch(&self, req: &HookRequest) {
-        let (Some(launches), Some(launch)) = (&self.launches, req.launch_id.as_deref()) else {
+        let Some(launches) = &self.launches else {
+            return;
+        };
+        if !req.session_id.is_empty() && !req.process_ids.is_empty() {
+            let session = self.resolve_session(req);
+            for &pid in &req.process_ids {
+                launches.observe_process(pid, &session);
+            }
+        }
+        let Some(launch) = req.launch_id.as_deref() else {
             return;
         };
         // Re-validated: the field crossed a socket, and only the shape we mint is routed on.
@@ -736,6 +745,7 @@ mod tests {
             tool_input: json!({ "file_path": "/x" }),
             cwd: "/repo".into(),
             launch_id: None,
+            process_ids: Vec::new(),
         }
     }
 
@@ -879,6 +889,24 @@ mod tests {
             LaunchObservation::Moved {
                 from: SessionId::new("a05a347e")
             }
+        );
+    }
+
+    /// A process no IDE launched has no launch id, only its pid: a `/resume` must still
+    /// move it, or its stdio MCP server keeps acting on the conversation it spawned in.
+    #[tokio::test]
+    async fn a_hook_moves_its_process_to_the_conversation_it_reports() {
+        let (server, launches, _seen) = launch_server();
+        let mut first = launched("ad055831", None, "PreToolUse");
+        first.process_ids = vec![4242];
+        decide_json(&server, &first).await;
+        let mut resumed = launched("efdf1598", None, PROMPT_EVENT_FOR_TESTS);
+        resumed.process_ids = vec![4242];
+        decide_json(&server, &resumed).await;
+
+        assert_eq!(
+            launches.process_current(4242),
+            Some(SessionId::new("efdf1598"))
         );
     }
 
@@ -1027,6 +1055,7 @@ mod tests {
             tool_input: json!({ "command": command }),
             cwd: "/repo".into(),
             launch_id: None,
+            process_ids: Vec::new(),
         }
     }
 
@@ -1401,6 +1430,7 @@ mod tests {
             tool_input: serde_json::Value::Null,
             cwd: "/repo".into(),
             launch_id: None,
+            process_ids: Vec::new(),
         }
     }
 
@@ -1626,6 +1656,7 @@ mod tests {
             tool_input: json!({}),
             cwd: "/repo".into(),
             launch_id: None,
+            process_ids: Vec::new(),
         })
         .unwrap();
         // The hold times out into a deny, but the notifier was already called.
@@ -1647,6 +1678,7 @@ mod tests {
             tool_input: json!({ "plan": "1. do X" }),
             cwd: "/repo".into(),
             launch_id: None,
+            process_ids: Vec::new(),
         })
         .unwrap()
     }

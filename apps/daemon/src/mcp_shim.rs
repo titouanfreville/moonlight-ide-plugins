@@ -77,6 +77,9 @@ impl McpActor for RemoteActor {
         let body = serde_json::json!({
             "session_id": req.session.as_str(),
             "launch_id": moonlight_control::launch_id_from_env(),
+            // For a process no IDE launched: the daemon follows its pid instead. A `ps`
+            // per verb is nothing beside a call that can hold for minutes.
+            "process_ids": moonlight_control::claude_process_ids(),
             "verb": req.verb,
             "payload": req.payload,
         });

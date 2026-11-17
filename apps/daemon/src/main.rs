@@ -779,6 +779,7 @@ mod tests {
             tool_input: serde_json::json!({ "file_path": "/repo/src/main.rs" }),
             cwd: "/repo".to_string(),
             launch_id: None,
+            process_ids: Vec::new(),
         }
     }
 

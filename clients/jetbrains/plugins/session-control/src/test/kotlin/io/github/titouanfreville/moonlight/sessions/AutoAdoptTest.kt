@@ -28,6 +28,13 @@ class AutoAdoptTest {
         assertEquals(emptyList<DiscoverableSession>(), sessionsToAdopt(listOf(session("a", false)), ownsAll, setOf("a")))
     }
 
+    /** The mod held the session in Auto while the daemon, having adopted it, held it in Plan. */
+    @Test
+    fun `a session the Claude Code mod governs is left to it`() {
+        val taken = sessionsToAdopt(listOf(session("by-mod", false), session("free", false)), ownsAll, emptySet()) { it == "by-mod" }
+        assertEquals(listOf("free"), taken.map { it.sessionId })
+    }
+
     @Test
     fun `attempts are forgotten once the session is adopted`() {
         assertEquals(listOf("a"), staleAttempts(setOf("a"), listOf(session("a", true))))

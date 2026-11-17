@@ -44,6 +44,17 @@ test('an already attempted session is not retried', () => {
   assert.deepEqual(sessionsToAdopt(sessions, ownsAll, new Set(['a'])), []);
 });
 
+test('a session the Claude Code mod governs is left to it', () => {
+  // The bug this prevents: the mod held the session in Auto while the daemon, having
+  // adopted it, held it in Plan, and both gates enforced.
+  const sessions = [session('by-mod', false), session('free', false)];
+  const modGoverned = (id: string) => id === 'by-mod';
+  assert.deepEqual(
+    sessionsToAdopt(sessions, ownsAll, new Set(), modGoverned).map((s) => s.session_id),
+    ['free']
+  );
+});
+
 test('attempts are forgotten once the session is adopted', () => {
   // Otherwise the set only grows, and a session released later could never be
   // adopted again by this window.

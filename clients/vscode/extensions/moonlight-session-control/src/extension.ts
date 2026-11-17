@@ -18,20 +18,15 @@ import type { MoonlightApi } from 'moonlight-core';
 
 import { advanceSessionPhase, setSessionPhase } from './phase-route';
 import { requireCore } from './core';
-import { sessionsToAdopt, staleAttempts } from './auto-adopt';
+import { MOD_GOVERNED_ADOPT, sessionsToAdopt, staleAttempts } from './auto-adopt';
 import { MoonlightPanel, PANEL_VIEW_ID } from './panel-view';
 import { nodeSession, sessionNode } from './panel-route';
+import { startSession } from './start-session';
 import { PHASES } from './rows';
 import type { Tab } from './panel-model';
 import { GroupStore } from './groups-store';
-
-/**
- * How long to wait for detection to notice a session we just launched, before
- * telling the operator it is ungoverned. Detection polls the transcript every 750ms,
- * but a fresh session writes nothing until it is prompted.
- */
-const ADOPT_POLL_MS = 750;
-const ADOPT_ATTEMPTS = 20;
+import { HiddenStore } from './hidden-store';
+import { registerTidyCommands } from './tidy-commands';
 
 export function activate(context: vscode.ExtensionContext): void {
 /**
@@ -52,12 +47,15 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!core) {
         return;
       }
-      const candidates = core.sessions().filter((s) => !s.adopted);
+      // A session the mod governs keeps its own gate: not a candidate.
+      const candidates = core
+        .sessions()
+        .filter((s) => !s.adopted && core.governor?.(s.session_id) !== 'mod');
       if (candidates.length === 0) {
         void vscode.window.showInformationMessage(
           core.sessions().length === 0
             ? 'No Claude Code sessions detected yet. Run `claude` somewhere and wait a few seconds.'
-            : 'Every detected session is already adopted.'
+            : 'Every detected session is already governed, by the daemon or by the MoonlightCode plugin inside Claude Code.'
         );
         return;
       }
@@ -211,58 +209,26 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     }),
 
-    vscode.commands.registerCommand('moonlight.sessionControl.startSession', async () => {
+    vscode.commands.registerCommand('moonlight.sessionControl.startSession', async (host?: unknown) => {
       const core = await withCore();
-      if (!core) {
-        return;
+      if (core) {
+        await startSession(context, core, host === 'herdr' || host === 'terminal' ? host : undefined);
       }
-      const folder = vscode.workspace.workspaceFolders?.[0];
-      const sessionId = globalThis.crypto?.randomUUID?.();
-      if (!sessionId) {
-        void vscode.window.showErrorMessage('Could not generate a session id.');
-        return;
-      }
-      core.terminals.start(sessionId, folder?.uri.fsPath);
+    }),
 
-      // Starting a session through MoonlightCode *is* the decision to govern it —
-      // the desktop cockpit records its own launches as adopted for exactly this
-      // reason. Adoption can't happen until detection has seen the session, though:
-      // the engine drops `SetAdopted` for a session not yet in the fleet, so this
-      // waits for it to appear rather than firing into the void.
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: `Starting session ${sessionId.slice(0, 8)} — waiting for detection…`,
-        },
-        async () => {
-          for (let attempt = 0; attempt < ADOPT_ATTEMPTS; attempt++) {
-            await new Promise((r) => setTimeout(r, ADOPT_POLL_MS));
-            await core.refresh();
-            if (!core.sessions().some((s) => s.session_id === sessionId)) {
-              continue;
-            }
-            try {
-              await controlApi.adopt(sessionId);
-              await core.refresh();
-              void vscode.window.showInformationMessage(
-                `Session ${sessionId.slice(0, 8)} started and adopted — governed from its next tool call, and reviews can be delivered to its terminal.`
-              );
-            } catch (err) {
-              void vscode.window.showWarningMessage(
-                `Session started, but adopting it failed: ${
-                  err instanceof Error ? err.message : String(err)
-                } Use "Adopt a Claude Code Session" to retry.`
-              );
-            }
-            return;
-          }
-          // Detection works off the transcript, which only appears once the session
-          // writes something. Say so rather than implying the session is governed.
-          void vscode.window.showWarningMessage(
-            `Session ${sessionId.slice(0, 8)} started, but detection has not seen it yet, so it is NOT governed. It is only detected once it writes its first transcript line — send it a prompt, then run "Adopt a Claude Code Session".`
-          );
+    vscode.commands.registerCommand('moonlight.sessions.showInHerdr', async (node?: unknown) => {
+      const core = await withCore();
+      const id = typeof node === 'string' ? node : nodeSession(node)?.session_id;
+      if (!core?.herdr || !id) {
+        return;
+      }
+      try {
+        if (!(await core.herdr.focus(id))) {
+          void vscode.window.showInformationMessage('herdr does not host this session.');
         }
-      );
+      } catch (err) {
+        void vscode.window.showErrorMessage(`MoonlightCode: herdr did not focus it. ${err instanceof Error ? err.message : String(err)}`);
+      }
     })
   );
 
@@ -291,13 +257,18 @@ async function registerSessionsView(
   const groups = new GroupStore(context.workspaceState);
   context.subscriptions.push(groups);
 
-  const panel = new MoonlightPanel(context, core, groups);
+  const hidden = new HiddenStore(context.workspaceState);
+  context.subscriptions.push(hidden);
+  registerTidyCommands(context, core, groups, hidden);
+
+  const panel = new MoonlightPanel(context, core, groups, hidden);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(PANEL_VIEW_ID, panel, {
       // A note being written survives switching to another sidebar view and back.
       webviewOptions: { retainContextWhenHidden: true },
     }),
     groups.onDidChange(() => panel.refresh()),
+    hidden.onDidChange(() => panel.refresh()),
     // A grouping-mode or colour change rearranges the view, and nothing else would
     // notice it until the next backend poll happened to fire.
     vscode.workspace.onDidChangeConfiguration((e) => {
@@ -355,7 +326,8 @@ async function registerSessionsView(
       attempted.delete(id);
     }
     const owns = core.ownsSession.bind(core);
-    const taking = sessionsToAdopt(sessions, owns, attempted);
+    const modGoverned = (id: string): boolean => core.governor?.(id) === 'mod';
+    const taking = sessionsToAdopt(sessions, owns, attempted, modGoverned);
     if (taking.length === 0) {
       return;
     }
@@ -531,6 +503,10 @@ async function registerSessionsView(
       const session = targetOf(node);
       if (!session) {
         void vscode.window.showInformationMessage('Pick a session in the MoonlightCode view.');
+        return;
+      }
+      if (core.governor?.(session.session_id) === 'mod') {
+        void vscode.window.showInformationMessage(MOD_GOVERNED_ADOPT);
         return;
       }
       try {

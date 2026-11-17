@@ -135,6 +135,15 @@ impl BusFleetView {
             .contains_key(id)
     }
 
+    /// One session, as the fleet knows it now.
+    pub fn get(&self, id: &SessionId) -> Option<Session> {
+        self.sessions
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(id)
+            .cloned()
+    }
+
     pub fn all(&self) -> Vec<Session> {
         self.sessions
             .read()

@@ -115,6 +115,11 @@ private class SessionsPanel(private val project: Project, private val toolWindow
 
     private fun redraw() {
         if (project.isDisposed) return
+        // A hidden session that works again is visible again, for good — before the lists
+        // are drawn, so it is drawn.
+        val settings = SessionControlSettings.of(project)
+        val api = MoonlightApi.getInstance()
+        reconcileHidden(settings.hidden(), api.sessions(), api.heldApprovals().mapTo(HashSet()) { it.sessionId })?.let(settings::setHidden)
         governed.rebuild()
         unadopted.rebuild()
         // The badge is reserved for holds: the one number worth interrupting for, and it
@@ -264,12 +269,17 @@ private class SessionList(
     fun rebuild() {
         val core = MoonlightApi.getInstance()
         val all = core.sessions()
-        val sessions = sessionsFor(scope, all)
+        // Hidden in this project: out of the list until they work again (see Tidy.kt).
+        val hidden = SessionControlSettings.of(project).hidden()
+        val sessions = sessionsFor(scope, all).filter { it.sessionId !in hidden }
         val held = core.heldApprovals().associateBy { it.sessionId }
         val following = core.activeSession(project)?.sessionId
         val selectedKey = selectedNode()?.let(::keyOf)
 
-        header.text = (if (scope == Scope.Governed) "Governed" else "Not gated") + if (sessions.isNotEmpty()) "  ${sessions.size}" else ""
+        val hiddenHere = sessionsFor(scope, all).count { it.sessionId in hidden }
+        header.text = (if (scope == Scope.Governed) "Governed" else "Not gated") +
+            (if (sessions.isNotEmpty()) "  ${sessions.size}" else "") +
+            (if (hiddenHere > 0) "  ·  $hiddenHere hidden" else "")
         emptyText(core.backendError(), all.isNotEmpty())
 
         fun row(s: DiscoverableSession, groupId: String?) =

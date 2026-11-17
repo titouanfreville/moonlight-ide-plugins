@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import type { DiscoverableSession } from 'moonlight-control-client';
 
-import { isAiAction, isTab, nodeSession, phaseMove, routeOf } from './panel-route';
+import { isAiAction, isTab, nodeSession, phaseMove, routeOf, tidyTargets } from './panel-route';
 
 const session = (over: Partial<DiscoverableSession> = {}): DiscoverableSession => ({
   session_id: 's1',
@@ -93,4 +93,26 @@ test('AI review actions are checked before they reach the mod', () => {
   assert.ok(!isAiAction({ type: 'delete-all' }));
   assert.ok(!isAiAction(undefined));
   assert.equal(routeOf({ type: 'ai', id: 's1', action: { type: 'wipe' } as never }, undefined), undefined);
+});
+
+test('a group-wide tidy acts on what the page showed for that group, nothing else', () => {
+  const model = {
+    governed: [
+      { key: 'project:/p', label: 'p', customId: undefined, rows: [], tidy: ['a', 'b'], forgettable: ['a'] },
+    ],
+    unadoptedTidy: ['u'],
+    unadoptedForgettable: [],
+  };
+  assert.deepEqual(tidyTargets(model, 'hide', 'project:/p'), ['a', 'b']);
+  assert.deepEqual(tidyTargets(model, 'forget', 'project:/p'), ['a']);
+  assert.deepEqual(tidyTargets(model, 'hide', 'unadopted'), ['u']);
+  assert.deepEqual(tidyTargets(model, 'forget', 'unadopted'), []);
+  assert.deepEqual(tidyTargets(model, 'hide', 'project:/elsewhere'), []);
+});
+
+test('hide and forget are session commands, carrying the session', () => {
+  const s = session();
+  assert.equal(routeOf({ type: 'command', command: 'hide', id: 's1' }, s)?.command, 'moonlight.sessions.hide');
+  assert.equal(routeOf({ type: 'command', command: 'forget', id: 's1' }, s)?.command, 'moonlight.sessions.forget');
+  assert.equal(routeOf({ type: 'command', command: 'showHidden' }, undefined)?.command, 'moonlight.sessions.showHidden');
 });

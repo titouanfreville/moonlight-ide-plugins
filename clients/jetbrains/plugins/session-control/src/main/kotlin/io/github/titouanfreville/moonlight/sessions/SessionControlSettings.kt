@@ -27,6 +27,42 @@ class SessionControlSettings : SimplePersistentStateComponent<SessionControlSett
          * until you act.
          */
         var autoAdopt by property(false)
+
+        /** Where "Start Governed Claude Session" runs Claude Code: `moonlight.sessions.startIn`. */
+        var startIn by enum(StartIn.Ask)
+
+        /** The `herdr` binary; empty to find it on PATH and the usual folders. */
+        var herdrPath by string("")
+
+        /** Start herdr sessions where this project's last one went, without asking. */
+        var herdrReuseLast by property(false)
+
+        /** The herdr workspace this project's last session went to. */
+        var herdrLastWorkspace by string(null)
+
+        /** Sessions hidden in this project → when (epoch ms). See `Tidy.kt` for when they come back. */
+        var hidden by map<String, Long>()
+    }
+
+    fun hidden(): Map<String, Long> = state.hidden.toMap()
+
+    // Each change assigns a new map: the setter is what records the change for saving
+    // (mutating the map in place would not, and the platform's counter is internal API).
+    fun hide(project: Project, ids: List<String>) {
+        val now = System.currentTimeMillis()
+        state.hidden = (state.hidden + ids.associateWith { now }).toMutableMap()
+        SessionViewListener.fire(project)
+    }
+
+    fun unhide(project: Project, ids: List<String>) {
+        if (ids.none { it in state.hidden }) return
+        state.hidden = (state.hidden - ids.toSet()).toMutableMap()
+        SessionViewListener.fire(project)
+    }
+
+    /** Replace the hidden list after a reconcile; no event, the redraw that asked is already running. */
+    fun setHidden(hidden: Map<String, Long>) {
+        state.hidden = hidden.toMutableMap()
     }
 
     fun groupBy(): GroupBy = state.groupBy
@@ -41,6 +77,13 @@ class SessionControlSettings : SimplePersistentStateComponent<SessionControlSett
     companion object {
         fun of(project: Project): SessionControlSettings = project.service()
     }
+}
+
+/** Where a session we start runs. */
+enum class StartIn(val label: String) {
+    Ask("Ask each time, when herdr is running"),
+    Terminal("An IDE terminal (ends with the IDE)"),
+    Herdr("A herdr pane (outlives the IDE)"),
 }
 
 /** The session lists' arrangement moved — grouping mode or custom groups. */

@@ -6,6 +6,7 @@ import com.intellij.openapi.ui.DialogPanel
 import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.dsl.builder.bindItem
 import com.intellij.ui.dsl.builder.bindSelected
+import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.panel
 import io.github.titouanfreville.moonlight.core.AutoResumeMode
 import io.github.titouanfreville.moonlight.core.MAX_EXIT_RESUMES
@@ -30,6 +31,25 @@ class SessionControlConfigurable(private val project: Project) : BoundConfigurab
                             "or be the session you are working in. <b>An auto-adopted session lands on Plan, where project " +
                             "writes are denied</b> until you advance its phase — so a new session stops until you act."
                     )
+            }
+            row("Start sessions in:") {
+                comboBox(StartIn.entries, object : SimpleListCellRenderer<StartIn>() {
+                    override fun customize(list: javax.swing.JList<out StartIn>, value: StartIn?, index: Int, selected: Boolean, hasFocus: Boolean) {
+                        text = value?.label ?: ""
+                    }
+                })
+                    .bindItem({ settings.state.startIn }, { settings.state.startIn = it ?: StartIn.Ask })
+                    .comment("herdr is offered only while a herdr server is running (macOS and Linux). A session in herdr survives closing the IDE and can be reattached from any terminal.")
+            }
+            row("herdr binary:") {
+                textField()
+                    .bindText({ settings.state.herdrPath ?: "" }, { settings.state.herdrPath = it.trim() })
+                    .comment("Empty: found on PATH, then in /opt/homebrew/bin, /usr/local/bin, ~/.local/bin and ~/.cargo/bin.")
+            }
+            row {
+                checkBox("Start herdr sessions where this project's last one went, without asking")
+                    .bindSelected({ settings.state.herdrReuseLast }, { settings.state.herdrReuseLast = it })
+                    .comment("A new tab in that workspace. The choice is offered again when the workspace is gone.")
             }
             row("Resume sessions:") {
                 comboBox(AutoResumeMode.entries, autoResumeRenderer())
