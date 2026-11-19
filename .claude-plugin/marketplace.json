@@ -10,6 +10,12 @@
       "source": "./clients/claude-code/moonlight",
       "description": "MoonlightCode workflow phases, Plan and Review panels inside Claude Code. Stands by while the MoonlightCode daemon governs.",
       "category": "productivity"
+    },
+    {
+      "name": "dispatcher",
+      "source": "./clients/claude-code/dispatcher",
+      "description": "Sizes each task and runs it in a subagent on the model and effort it is worth.",
+      "category": "productivity"
     }
   ]
 }

@@ -1,0 +1,9 @@
+{
+  "name": "dispatcher",
+  "version": "0.1.0",
+  "description": "Every session acts as a dispatcher: it sizes each task and runs it in a subagent on the model and effort the task is worth.",
+  "author": {
+    "name": "Titouan Freville",
+    "url": "https://github.com/titouanfreville"
+  }
+}
